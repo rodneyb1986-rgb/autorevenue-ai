@@ -11,6 +11,8 @@ const PUBLIC = path.join(__dirname, 'public');
 const DATA_FILE = path.join(__dirname, 'data', 'app-data.json');
 const sessions = new Map();
 const attempts = new Map();
+let requestCount = 0;
+let storageReady = false;
 const DEFAULT_STATE = {
   opportunities: [], campaigns: [], content: [], revenue: [], approvals: [], automationRuns: [],
   settings: { niche: '', monthlyGoal: 500, autonomy: 'approval', strategies: ['affiliate', 'digital-products', 'lead-generation', 'content'] },
@@ -23,14 +25,26 @@ app.use(express.static(PUBLIC, { index: false }));
 
 let pool = null;
 let state = structuredClone(DEFAULT_STATE);
+const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'activity'];
+const ALLOWED_STRATEGIES = ['affiliate', 'digital-products', 'lead-generation', 'content', 'services'];
 function cleanState(value) {
-  const v = value && typeof value === 'object' ? value : {};
+  const v = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const out = { ...structuredClone(DEFAULT_STATE), ...v };
-  for (const key of ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'activity']) {
-    if (!Array.isArray(out[key])) out[key] = [];
-    out[key] = out[key].slice(-500);
+  for (const key of STATE_LISTS) {
+    const rows = Array.isArray(out[key]) ? out[key].slice(-500) : [];
+    out[key] = rows.filter(row => row && typeof row === 'object' && !Array.isArray(row))
+      .map(row => Object.fromEntries(Object.entries(row).filter(([, val]) =>
+        val === null || ['string', 'number', 'boolean'].includes(typeof val) ||
+        (Array.isArray(val) && val.length <= 100)
+      )));
   }
-  out.settings = { ...DEFAULT_STATE.settings, ...(out.settings || {}) };
+  const settings = out.settings && typeof out.settings === 'object' && !Array.isArray(out.settings) ? out.settings : {};
+  out.settings = {
+    niche: String(settings.niche || '').slice(0, 160),
+    monthlyGoal: Number.isFinite(Number(settings.monthlyGoal)) ? Math.max(0, Math.min(Number(settings.monthlyGoal), 100000000)) : 500,
+    autonomy: settings.autonomy === 'draft' ? 'draft' : 'approval',
+    strategies: Array.isArray(settings.strategies) ? [...new Set(settings.strategies.filter(x => ALLOWED_STRATEGIES.includes(x)))].slice(0, ALLOWED_STRATEGIES.length) : [...DEFAULT_STATE.settings.strategies]
+  };
   return out;
 }
 async function initStorage() {
@@ -41,9 +55,11 @@ async function initStorage() {
     const result = await pool.query('SELECT payload FROM autorevenue_ai_state WHERE id = 1');
     if (result.rows[0]) state = cleanState(result.rows[0].payload);
     else await pool.query('INSERT INTO autorevenue_ai_state (id, payload) VALUES (1, $1)', [state]);
+    storageReady = true;
     console.log('Persistent PostgreSQL storage connected.');
   } else {
     try { state = cleanState(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'))); } catch { state = structuredClone(DEFAULT_STATE); }
+    storageReady = true;
     console.warn('DATABASE_URL is not configured: using local JSON storage. Data may not survive a Render restart or redeploy.');
   }
 }
@@ -68,6 +84,8 @@ function clientIp(req) { return req.headers['x-forwarded-for']?.split(',')[0]?.t
 function limited(bucket, max, windowMs) {
   return (req, res, next) => {
     const key = bucket + ':' + clientIp(req), now = Date.now();
+    requestCount++;
+    if (requestCount % 100 === 0) for (const [k, v] of attempts) if (v.reset < now) attempts.delete(k);
     const entry = attempts.get(key) || { count: 0, reset: now + windowMs };
     if (now > entry.reset) { entry.count = 0; entry.reset = now + windowMs; }
     entry.count++; attempts.set(key, entry);
@@ -93,7 +111,7 @@ app.get('/api/health', (req, res) => res.json({
   ok: true, app: 'AutoRevenue AI', version: '2.0.0',
   authConfigured: Boolean(process.env.ADMIN_PASSWORD),
   aiConfigured: Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL),
-  persistentStorage: Boolean(process.env.DATABASE_URL)
+  persistentStorage: Boolean(process.env.DATABASE_URL), storageReady
 }));
 app.post('/api/login', limited('login', 10, 15 * 60 * 1000), (req, res) => {
   const password = String(req.body?.password || '');
