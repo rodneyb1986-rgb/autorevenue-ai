@@ -110,7 +110,7 @@ app.post('/api/generate', requireAuth, limited('generate', 30, 60 * 60 * 1000), 
     const completion = await client.chat.completions.create({
       model: process.env.OPENAI_MODEL,
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-      temperature: 0.7, max_tokens: 1800
+      max_completion_tokens: 1800
     });
     const result = completion.choices?.[0]?.message?.content?.trim();
     if (!result) throw new Error('The model returned an empty response.');
