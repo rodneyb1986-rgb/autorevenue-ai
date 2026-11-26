@@ -37,10 +37,10 @@ async function initStorage() {
   if (process.env.DATABASE_URL) {
     const { Pool } = require('pg');
     pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false }, max: 5, connectionTimeoutMillis: 10000 });
-    await pool.query('CREATE TABLE IF NOT EXISTS autorevenue_state (id integer PRIMARY KEY CHECK (id = 1), payload jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())');
-    const result = await pool.query('SELECT payload FROM autorevenue_state WHERE id = 1');
+    await pool.query('CREATE TABLE IF NOT EXISTS autorevenue_ai_state (id integer PRIMARY KEY CHECK (id = 1), payload jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())');
+    const result = await pool.query('SELECT payload FROM autorevenue_ai_state WHERE id = 1');
     if (result.rows[0]) state = cleanState(result.rows[0].payload);
-    else await pool.query('INSERT INTO autorevenue_state (id, payload) VALUES (1, $1)', [state]);
+    else await pool.query('INSERT INTO autorevenue_ai_state (id, payload) VALUES (1, $1)', [state]);
     console.log('Persistent PostgreSQL storage connected.');
   } else {
     try { state = cleanState(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'))); } catch { state = structuredClone(DEFAULT_STATE); }
@@ -49,7 +49,7 @@ async function initStorage() {
 }
 async function saveState(next) {
   state = cleanState(next);
-  if (pool) await pool.query('INSERT INTO autorevenue_state (id, payload, updated_at) VALUES (1, $1, now()) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()', [state]);
+  if (pool) await pool.query('INSERT INTO autorevenue_ai_state (id, payload, updated_at) VALUES (1, $1, now()) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()', [state]);
   else { fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true }); fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2)); }
 }
 function clientIp(req) { return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown'; }
