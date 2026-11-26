@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const Stripe = require('stripe');
 const helmet = require('helmet');
 const fs = require('fs');
 const path = require('path');
@@ -14,18 +15,72 @@ const attempts = new Map();
 let requestCount = 0;
 let storageReady = false;
 const DEFAULT_STATE = {
-  opportunities: [], campaigns: [], content: [], revenue: [], approvals: [], automationRuns: [], golfOpportunities: [],
+  opportunities: [], campaigns: [], content: [], revenue: [], approvals: [], automationRuns: [], golfOpportunities: [], products: [], orders: [], subscriptions: [],
   settings: { niche: '', monthlyGoal: 500, autonomy: 'approval', strategies: ['affiliate', 'digital-products', 'lead-generation', 'content'] },
   activity: []
 };
 app.disable('x-powered-by');
 app.use(helmet({ contentSecurityPolicy: false }));
+// Stripe webhooks require the unmodified request body for signature verification.
+app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  try {
+    if (!process.env.STRIPE_SECRET_KEY || !process.env.STRIPE_WEBHOOK_SECRET) return res.status(503).send('Stripe webhook is not configured.');
+    if (!process.env.STRIPE_SECRET_KEY.startsWith('sk_test_')) return res.status(503).send('Live Stripe keys are disabled in this build.');
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+    const event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], process.env.STRIPE_WEBHOOK_SECRET);
+    const next = structuredClone(state);
+    const now = new Date().toISOString();
+    if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
+      const session = event.data.object;
+      const existing = next.orders.find(x => x.checkoutSessionId === session.id);
+      const order = {
+        id: existing?.id || session.id, checkoutSessionId: session.id,
+        paymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
+        customerId: typeof session.customer === 'string' ? session.customer : null,
+        customerEmail: session.customer_details?.email || session.customer_email || '',
+        productId: session.metadata?.productId || '',
+        productName: session.metadata?.productName || '',
+        mode: session.mode, amountTotal: Number(session.amount_total || 0) / 100,
+        currency: String(session.currency || 'usd').toUpperCase(),
+        paymentStatus: session.payment_status || 'unknown',
+        fulfillmentStatus: existing?.fulfillmentStatus || 'pending',
+        status: 'paid', updatedAt: now, createdAt: existing?.createdAt || now
+      };
+      if (existing) Object.assign(existing, order); else next.orders.unshift(order);
+      if (session.mode === 'subscription' && session.subscription) {
+        const subId = typeof session.subscription === 'string' ? session.subscription : session.subscription.id;
+        if (!next.subscriptions.some(x => x.stripeSubscriptionId === subId)) next.subscriptions.unshift({
+          stripeSubscriptionId: subId, customerId: order.customerId, customerEmail: order.customerEmail,
+          status: 'active', productName: order.productName, createdAt: now
+        });
+      }
+    } else if (event.type.startsWith('customer.subscription.')) {
+      const sub = event.data.object;
+      const subId = sub.id;
+      const record = next.subscriptions.find(x => x.stripeSubscriptionId === subId);
+      const updated = { stripeSubscriptionId: subId, customerId: typeof sub.customer === 'string' ? sub.customer : null,
+        status: sub.status, currentPeriodEnd: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
+        cancelAtPeriodEnd: Boolean(sub.cancel_at_period_end), updatedAt: now };
+      if (record) Object.assign(record, updated); else next.subscriptions.unshift(updated);
+    } else if (event.type === 'checkout.session.expired') {
+      const session = event.data.object;
+      const record = next.orders.find(x => x.checkoutSessionId === session.id);
+      if (record) { record.status = 'expired'; record.updatedAt = now; }
+    }
+    next.activity.unshift({ message: 'Stripe event processed: ' + event.type, at: now });
+    await saveState(next);
+    res.json({ received: true });
+  } catch (error) {
+    console.error('Stripe webhook error:', error.message);
+    res.status(400).send('Webhook signature verification failed.');
+  }
+});
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(PUBLIC, { index: false }));
 
 let pool = null;
 let state = structuredClone(DEFAULT_STATE);
-const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'golfOpportunities', 'activity'];
+const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'golfOpportunities', 'products', 'orders', 'subscriptions', 'activity'];
 const ALLOWED_STRATEGIES = ['affiliate', 'digital-products', 'lead-generation', 'content', 'services'];
 function cleanState(value) {
   const v = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -110,6 +165,8 @@ function requireAuth(req, res, next) {
 app.get('/api/health', (req, res) => res.json({
   ok: true, app: 'AutoRevenue AI', version: '2.0.0',
   authConfigured: Boolean(process.env.ADMIN_PASSWORD),
+  stripeTestConfigured: Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_SECRET_KEY.startsWith('sk_test_')),
+  stripeWebhookConfigured: Boolean(process.env.STRIPE_WEBHOOK_SECRET),
   aiConfigured: Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL),
   persistentStorage: Boolean(process.env.DATABASE_URL), storageReady
 }));
@@ -121,6 +178,68 @@ app.post('/api/login', limited('login', 10, 15 * 60 * 1000), (req, res) => {
   res.json({ token: createSession() });
 });
 app.post('/api/logout', requireAuth, (req, res) => { sessions.delete(req.sessionToken); res.json({ ok: true }); });
+
+function getStripeClient() {
+  if (!process.env.STRIPE_SECRET_KEY) throw new Error('Stripe is not configured. Add STRIPE_SECRET_KEY in Render.');
+  if (!process.env.STRIPE_SECRET_KEY.startsWith('sk_test_')) throw new Error('Only Stripe test-mode keys are accepted by this build.');
+  return new Stripe(process.env.STRIPE_SECRET_KEY);
+}
+app.get('/api/commerce/products', requireAuth, (req, res) => res.json({ products: state.products || [] }));
+app.post('/api/commerce/products', requireAuth, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const name = String(body.name || '').trim().slice(0, 160);
+    const description = String(body.description || '').trim().slice(0, 2000);
+    const type = body.type === 'physical' ? 'physical' : 'digital';
+    const billing = body.billing === 'subscription' ? 'subscription' : 'one_time';
+    const amount = Number(body.amount);
+    const interval = ['month', 'year'].includes(body.interval) ? body.interval : 'month';
+    if (!name || !Number.isFinite(amount) || amount <= 0 || amount > 1000000) return res.status(400).json({ error: 'Enter a product name and a valid positive price.' });
+    if (billing === 'subscription' && type === 'physical') return res.status(400).json({ error: 'Recurring physical-product orders are not enabled yet. Use one-time checkout for shipped goods.' });
+    const product = { id: crypto.randomUUID(), name, description, type, billing, amount: Math.round(amount * 100) / 100, currency: 'usd', interval: billing === 'subscription' ? interval : null, active: true, createdAt: new Date().toISOString() };
+    const next = structuredClone(state); next.products.unshift(product);
+    next.activity.unshift({ message: 'Created commerce product: ' + name, at: product.createdAt });
+    await saveState(next);
+    res.status(201).json({ product });
+  } catch (error) { console.error('Product create failed:', error.message); res.status(500).json({ error: 'Could not save product.' }); }
+});
+app.post('/api/commerce/checkout', requireAuth, limited('checkout', 30, 60 * 60 * 1000), async (req, res) => {
+  try {
+    const product = (state.products || []).find(x => x.id === String(req.body?.productId || '') && x.active);
+    if (!product) return res.status(404).json({ error: 'Active product not found.' });
+    const stripe = getStripeClient();
+    const baseUrl = String(process.env.APP_BASE_URL || '').replace(/\/$/, '');
+    if (!baseUrl || !/^https:\/\//i.test(baseUrl)) return res.status(503).json({ error: 'Set APP_BASE_URL to the HTTPS AutoRevenue AI test URL in Render.' });
+    const session = await stripe.checkout.sessions.create({
+      mode: product.billing === 'subscription' ? 'subscription' : 'payment',
+      line_items: [{ price_data: {
+        currency: product.currency || 'usd',
+        product_data: { name: product.name, description: product.description || undefined, metadata: { productId: product.id, productType: product.type } },
+        unit_amount: Math.round(Number(product.amount) * 100),
+        ...(product.billing === 'subscription' ? { recurring: { interval: product.interval || 'month' } } : {})
+      }, quantity: 1 }],
+      customer_email: typeof req.body?.email === 'string' && req.body.email.includes('@') ? req.body.email.slice(0, 254) : undefined,
+      success_url: baseUrl + '/?checkout=success&session_id={CHECKOUT_SESSION_ID}',
+      cancel_url: baseUrl + '/?checkout=cancelled',
+      allow_promotion_codes: true,
+      billing_address_collection: product.type === 'physical' ? 'required' : 'auto',
+      shipping_address_collection: product.type === 'physical' ? { allowed_countries: ['US'] } : undefined,
+      metadata: { productId: product.id, productName: product.name, productType: product.type, billing: product.billing }
+    });
+    res.json({ url: session.url, sessionId: session.id, mode: session.mode, testMode: true });
+  } catch (error) { console.error('Stripe checkout creation failed:', error.message); res.status(502).json({ error: error.message || 'Could not create Stripe Checkout session.' }); }
+});
+app.post('/api/commerce/portal', requireAuth, async (req, res) => {
+  try {
+    const customerId = String(req.body?.customerId || '').trim();
+    if (!customerId.startsWith('cus_')) return res.status(400).json({ error: 'A valid Stripe customer ID is required.' });
+    const stripe = getStripeClient();
+    const baseUrl = String(process.env.APP_BASE_URL || '').replace(/\/$/, '');
+    if (!baseUrl || !/^https:\/\//i.test(baseUrl)) return res.status(503).json({ error: 'Set APP_BASE_URL to the HTTPS AutoRevenue AI test URL in Render.' });
+    const portal = await stripe.billingPortal.sessions.create({ customer: customerId, return_url: baseUrl });
+    res.json({ url: portal.url });
+  } catch (error) { console.error('Stripe portal creation failed:', error.message); res.status(502).json({ error: 'Could not create subscription management session.' }); }
+});
 app.get('/api/state', requireAuth, (req, res) => res.json(state));
 app.put('/api/state', requireAuth, async (req, res) => {
   try {
