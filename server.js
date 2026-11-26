@@ -151,6 +151,50 @@ app.post('/api/generate', requireAuth, limited('generate', 30, 60 * 60 * 1000), 
   }
 });
 
+
+app.post('/api/opportunities/analyze', requireAuth, limited('opportunity-analysis', 8, 60 * 60 * 1000), async (req, res) => {
+  if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) return res.status(503).json({ error: 'AI is not configured. Check OPENAI_API_KEY and OPENAI_MODEL in Render.' });
+  const niche = String(req.body?.niche || state.settings.niche || '').trim().slice(0, 160);
+  const focus = String(req.body?.focus || '').trim().slice(0, 1200);
+  const strategy = String(req.body?.strategy || 'Compare all strategies').slice(0, 100);
+  if (!niche) return res.status(400).json({ error: 'Enter a niche or industry first.' });
+  try {
+    const OpenAI = require('openai'), client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const system = 'You are a rigorous small-business opportunity analyst. Return only valid JSON. Do not claim to have performed live market research. Do not fabricate search volumes, competitors, prices, demand, conversion rates, affiliate terms or earnings. Treat every score and cost as a hypothesis or estimate that requires validation. Recommend legal, ethical, low-cost tests. Avoid spam and deceptive marketing.';
+    const prompt = 'Analyze the niche: ' + niche + '. Strategy preference: ' + strategy + '. User focus: ' + focus + '. Return JSON exactly shaped as {"opportunities":[{"title":"...","customer":"specific target customer","problem":"painful problem","offer":"proposed offer","monetization":"how it could earn revenue","startupCostLow":0,"startupCostHigh":0,"validationDays":7,"painScore":1,"customerClarityScore":1,"marginPotentialScore":1,"executionEaseScore":1,"validationEaseScore":1,"competitionRiskScore":1,"assumptions":["..."],"validationSteps":["...","...","..."],"mainRisk":"..."}]}. Provide 3 distinct ideas. Cost fields are USD estimates, scores are 1-5 where 5 is favorable except competitionRiskScore where 5 means high risk. No unsupported facts; put uncertain points in assumptions. Each validation plan must be possible without spending money or contacting people without consent.';
+    const completion = await client.chat.completions.create({ model: process.env.OPENAI_MODEL, messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }], max_completion_tokens: 3000 });
+    let raw = (completion.choices?.[0]?.message?.content || '').trim().replace(/^\x60{3}(?:json)?\s*/i, '').replace(/\s*\x60{3}$/, '');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed.opportunities) || parsed.opportunities.length < 1) throw new Error('No opportunity records returned.');
+    const opportunities = parsed.opportunities.slice(0, 5).map((o, index) => {
+      const score = key => Math.max(1, Math.min(5, Number(o[key]) || 1));
+      const pain=score('painScore'), clarity=score('customerClarityScore'), margin=score('marginPotentialScore'), ease=score('executionEaseScore'), speed=score('validationEaseScore'), risk=score('competitionRiskScore');
+      const total = Math.round(((pain*25 + clarity*20 + margin*20 + ease*20 + speed*15) / 5) - ((risk-1)*3));
+      return {
+        id: Date.now() + index, title: String(o.title || 'Untitled opportunity').slice(0,180),
+        customer: String(o.customer || '').slice(0,500), problem: String(o.problem || '').slice(0,700),
+        offer: String(o.offer || '').slice(0,700), monetization: String(o.monetization || '').slice(0,500),
+        startupCostLow: Math.max(0, Number(o.startupCostLow) || 0), startupCostHigh: Math.max(0, Number(o.startupCostHigh) || 0),
+        validationDays: Math.max(1, Math.min(90, Number(o.validationDays) || 14)),
+        scores: { pain, customerClarity: clarity, marginPotential: margin, executionEase: ease, validationEase: speed, competitionRisk: risk },
+        score: Math.max(0, Math.min(100, total)),
+        assumptions: Array.isArray(o.assumptions) ? o.assumptions.slice(0,6).map(x=>String(x).slice(0,400)) : [],
+        validationSteps: Array.isArray(o.validationSteps) ? o.validationSteps.slice(0,5).map(x=>String(x).slice(0,500)) : [],
+        mainRisk: String(o.mainRisk || '').slice(0,500),
+        status: 'Needs validation', scoreBasis: 'AI-estimated rubric; not verified market data', created: new Date().toISOString()
+      };
+    }).sort((a,b)=>b.score-a.score);
+    const next = structuredClone(state);
+    next.opportunities = [...opportunities, ...(next.opportunities || [])].slice(0,500);
+    next.activity = [{ message: 'Analyzed and ranked ' + opportunities.length + ' business opportunities', at: new Date().toISOString() }, ...(next.activity || [])].slice(0,40);
+    await saveState(next);
+    res.json({ ok: true, opportunities, scoring: 'Weighted planning rubric; all scores and cost ranges are hypotheses pending validation.' });
+  } catch (error) {
+    console.error('Opportunity analysis failed:', error.message);
+    res.status(502).json({ error: 'Opportunity analysis failed. Check Render logs and try again.' });
+  }
+});
+
 app.post('/api/automation/run', requireAuth, limited('automation', 5, 60 * 60 * 1000), async (req, res) => {
   if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) {
     return res.status(503).json({ error: 'AI is not configured. Check OPENAI_API_KEY and OPENAI_MODEL in Render.' });
