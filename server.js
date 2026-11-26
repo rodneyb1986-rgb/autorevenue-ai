@@ -82,18 +82,33 @@ let pool = null;
 let state = structuredClone(DEFAULT_STATE);
 const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'golfOpportunities', 'products', 'orders', 'subscriptions', 'activity'];
 const ALLOWED_STRATEGIES = ['affiliate', 'digital-products', 'lead-generation', 'content', 'services'];
+function sanitizeJson(value, depth = 0) {
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.slice(0, 10000);
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (Array.isArray(value)) {
+    if (depth >= 6) return [];
+    return value.slice(0, 100).map(item => sanitizeJson(item, depth + 1));
+  }
+  if (value && typeof value === 'object' && depth < 6) {
+    const result = {};
+    for (const [key, item] of Object.entries(value).slice(0, 100)) {
+      if (!key || key.length > 100 || ['__proto__', 'prototype', 'constructor'].includes(key)) continue;
+      result[key] = sanitizeJson(item, depth + 1);
+    }
+    return result;
+  }
+  return null;
+}
 function cleanState(value) {
   const v = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-  const out = { ...structuredClone(DEFAULT_STATE), ...v };
+  const out = structuredClone(DEFAULT_STATE);
   for (const key of STATE_LISTS) {
-    const rows = Array.isArray(out[key]) ? out[key].slice(-500) : [];
-    out[key] = rows.filter(row => row && typeof row === 'object' && !Array.isArray(row))
-      .map(row => Object.fromEntries(Object.entries(row).filter(([, val]) =>
-        val === null || ['string', 'number', 'boolean'].includes(typeof val) ||
-        (Array.isArray(val) && val.length <= 100)
-      )));
+    const rows = Array.isArray(v[key]) ? v[key].slice(-500) : [];
+    out[key] = rows.map(row => sanitizeJson(row))
+      .filter(row => row && typeof row === 'object' && !Array.isArray(row));
   }
-  const settings = out.settings && typeof out.settings === 'object' && !Array.isArray(out.settings) ? out.settings : {};
+  const settings = v.settings && typeof v.settings === 'object' && !Array.isArray(v.settings) ? v.settings : {};
   out.settings = {
     niche: String(settings.niche || '').slice(0, 160),
     monthlyGoal: Number.isFinite(Number(settings.monthlyGoal)) ? Math.max(0, Math.min(Number(settings.monthlyGoal), 100000000)) : 500,
@@ -168,7 +183,7 @@ app.get('/api/health', (req, res) => res.json({
   stripeTestConfigured: Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_SECRET_KEY.startsWith('sk_test_')),
   stripeWebhookConfigured: Boolean(process.env.STRIPE_WEBHOOK_SECRET),
   aiConfigured: Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL),
-  persistentStorage: Boolean(process.env.DATABASE_URL), storageReady
+  persistentStorage: Boolean(process.env.DATABASE_URL), storageMode: pool ? 'postgres' : 'local-json', storageReady
 }));
 app.post('/api/login', limited('login', 10, 15 * 60 * 1000), (req, res) => {
   const password = String(req.body?.password || '');
@@ -240,8 +255,15 @@ app.post('/api/commerce/portal', requireAuth, async (req, res) => {
     res.json({ url: portal.url });
   } catch (error) { console.error('Stripe portal creation failed:', error.message); res.status(502).json({ error: 'Could not create subscription management session.' }); }
 });
+app.get('/api/state/export', requireAuth, (req, res) => {
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="autorevenue-ai-backup-' + stamp + '.json"');
+  res.send(JSON.stringify(state, null, 2));
+});
 app.get('/api/state', requireAuth, (req, res) => res.json(state));
-app.put('/api/state', requireAuth, async (req, res) => {
+app.put('/api/state', requireAuth, limited('state-write', 120, 60 * 1000), async (req, res) => {
   try {
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return res.status(400).json({ error: 'Invalid workspace data.' });
     await saveState(req.body); res.json({ ok: true, updatedAt: new Date().toISOString() });
