@@ -47,10 +47,22 @@ async function initStorage() {
     console.warn('DATABASE_URL is not configured: using local JSON storage. Data may not survive a Render restart or redeploy.');
   }
 }
-async function saveState(next) {
-  state = cleanState(next);
-  if (pool) await pool.query('INSERT INTO autorevenue_ai_state (id, payload, updated_at) VALUES (1, $1, now()) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()', [state]);
-  else { fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true }); fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2)); }
+let saveQueue = Promise.resolve();
+function saveState(next) {
+  const normalized = cleanState(next);
+  const write = async () => {
+    if (pool) {
+      await pool.query('INSERT INTO autorevenue_ai_state (id, payload, updated_at) VALUES (1, $1, now()) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()', [normalized]);
+    } else {
+      fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+      fs.writeFileSync(DATA_FILE, JSON.stringify(normalized, null, 2));
+    }
+    state = normalized;
+    return state;
+  };
+  const pending = saveQueue.then(write);
+  saveQueue = pending.catch(() => {});
+  return pending;
 }
 function clientIp(req) { return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown'; }
 function limited(bucket, max, windowMs) {
