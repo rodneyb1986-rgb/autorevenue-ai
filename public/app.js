@@ -47,6 +47,7 @@ async function runAutomation(){
 }
 
 async function generate(type,prompt,niche,target){target.classList.remove('hidden');target.textContent='Working…';try{const r=await api('/api/generate',{method:'POST',body:JSON.stringify({type,prompt,niche})});target.textContent=r.result;return r.result}catch(e){target.textContent=e.message;return ''}}
+$('#idea-result').addEventListener('click',e=>{const b=e.target.closest('[data-action]');if(b)handleAction(b.dataset.action)});
 $('#generate-ideas').onclick=async()=>{
  const niche=$('#idea-niche').value||state.settings.niche,strategy=$('#idea-strategy').value,focus=$('#idea-prompt').value,target=$('#idea-result');
  target.classList.remove('hidden');target.textContent='Analyzing opportunities and scoring validation potential…';
