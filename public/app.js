@@ -28,6 +28,18 @@ function render(){
  $$('[data-action]').forEach(b=>b.onclick=()=>handleAction(b.dataset.action));
 }
 async function handleAction(action){const parts=action.split(':'),kind=parts[0],i=Number(parts[1]);if(kind==='delete-idea')state.opportunities.splice(i,1);if(kind==='delete-content')state.content.splice(i,1);if(kind==='delete-campaign')state.campaigns.splice(i,1);if(kind==='approve-content'){const x=state.content[i];state.approvals.unshift({id:Date.now(),title:'Content: '+x.title,details:x.body,status:'Pending',created:new Date().toISOString()})}if(kind==='approve-campaign'){const x=state.campaigns[i];state.approvals.unshift({id:Date.now(),title:'Campaign: '+x.name,details:x.plan,status:'Pending',created:new Date().toISOString()})}if(kind==='approve'||kind==='reject'){state.approvals[i].status=kind==='approve'?'Approved':'Rejected';state.approvals[i].decidedAt=new Date().toISOString()}addActivity(kind.replaceAll('-',' ')+' updated');try{await save()}catch(e){alert(e.message)}}
+
+async function runAutomation(){
+ const button=$('#run-automation'), output=$('#automation-result');
+ button.disabled=true;button.textContent='Building plan…';output.classList.remove('hidden');output.textContent='AI is preparing an opportunity, campaign and content draft…';
+ try{
+  const r=await api('/api/automation/run',{method:'POST',body:JSON.stringify({niche:state.settings.niche,strategies:state.settings.strategies})});
+  output.textContent='Created: '+r.created.opportunity+' · '+r.created.campaign+' · '+r.created.content+'\\n'+r.approvalsRequired+' items are waiting for your approval. Next step: '+r.nextStep;
+  await loadState();
+ }catch(e){output.textContent=e.message}
+ finally{button.disabled=false;button.textContent='Run automation cycle'}
+}
+
 async function generate(type,prompt,niche,target){target.classList.remove('hidden');target.textContent='Working…';try{const r=await api('/api/generate',{method:'POST',body:JSON.stringify({type,prompt,niche})});target.textContent=r.result;return r.result}catch(e){target.textContent=e.message;return ''}}
 $('#generate-ideas').onclick=async()=>{const niche=$('#idea-niche').value||state.settings.niche,strategy=$('#idea-strategy').value,focus=$('#idea-prompt').value;const prompt='Build 5 practical business opportunities for this niche. Strategy: '+strategy+'. Focus: '+focus+'. For each provide problem/customer, offer, monetization path, estimated startup cost range (label as estimate), first 3 validation steps, main risk, and a measurable 14-day test. Do not invent evidence of demand or guaranteed revenue.';const result=await generate('opportunity shortlist',prompt,niche,$('#idea-result'));if(result){const b=document.createElement('button');b.className='btn secondary';b.textContent='Save this shortlist';b.onclick=async()=>{state.opportunities.unshift({id:Date.now(),title:niche+' · '+strategy,body:result,status:'Needs validation',created:new Date().toISOString()});addActivity('Saved opportunity shortlist');await save();b.remove()};$('#idea-result').appendChild(b)}};
 $('#generate-asset').onclick=async()=>{const prompt='Create a ready-to-edit '+$('#asset-type').value+'. Topic: '+$('#asset-prompt').value+'. Audience/niche: '+($('#asset-niche').value||state.settings.niche)+'. Include a clear value proposition and ethical call to action. Avoid unsupported claims.';generatedAsset=await generate('content asset',prompt,$('#asset-niche').value,$('#asset-result'));if(generatedAsset){$('#save-asset').classList.remove('hidden');$('#send-approval').classList.remove('hidden')}};
