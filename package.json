@@ -3,13 +3,18 @@
   "version": "2.0.0",
   "description": "Approval-first AI revenue operations workspace",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
+  "scripts": {
+    "start": "node server.js"
+  },
   "dependencies": {
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "helmet": "^8.0.0",
     "openai": "^4.77.0",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "stripe": "^17.5.0"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }
