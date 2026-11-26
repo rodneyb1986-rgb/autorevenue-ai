@@ -116,3 +116,23 @@ $('#commerce-list').addEventListener('click',async e=>{
  try{const r=await api('/api/commerce/checkout',{method:'POST',body:JSON.stringify({productId,email})});out.textContent='Stripe test checkout is ready. Opening secure checkout…';window.location.href=r.url;}
  catch(err){out.textContent=err.message;button.disabled=false}
 });
+
+
+$('#export-backup').addEventListener('click', async () => {
+ const button = $('#export-backup'), status = $('#backup-result');
+ button.disabled = true; status.textContent = 'Preparing secure workspace backup…';
+ try {
+  const response = await fetch('/api/state/export', { headers: { Authorization: 'Bearer ' + token } });
+  if (response.status === 401) { logoutLocal(); throw new Error('Session expired. Sign in again.'); }
+  if (!response.ok) {
+   const problem = await response.json().catch(() => ({}));
+   throw new Error(problem.error || 'Backup download failed.');
+  }
+  const blob = await response.blob(), url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url; link.download = 'autorevenue-ai-backup-' + new Date().toISOString().slice(0,10) + '.json';
+  document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+  status.textContent = 'Backup downloaded. Store it somewhere private; it contains your workspace records.';
+ } catch (error) { status.textContent = error.message; }
+ finally { button.disabled = false; }
+});
