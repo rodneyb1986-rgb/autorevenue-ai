@@ -11,6 +11,18 @@ async function loadState(){state=await api('/api/state');state.settings=state.se
 $('#login-form').addEventListener('submit',async e=>{e.preventDefault();$('#login-error').textContent='Signing in…';try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('#login-password').value})}),j=await r.json();if(!r.ok)throw Error(j.error||'Sign-in failed');token=j.token;sessionStorage.setItem(KEY,token);$('#login-password').value='';showApp();await loadState()}catch(err){$('#login-error').textContent=err.message}});
 async function save(){await api('/api/state',{method:'PUT',body:JSON.stringify(state)});render()}
 async function checkSystem(){try{const h=await fetch('/api/health').then(r=>r.json());$('#system-state').textContent=h.aiConfigured?'AI configured':'AI setup required';$('#system-state').className='status '+(h.aiConfigured?'ok':'warn');const items=[['Admin password',h.authConfigured],['OpenAI connection',h.aiConfigured],['PostgreSQL storage',h.storageReady&&h.persistentStorage],['Stripe test key',h.stripeTestConfigured],['Stripe webhook',h.stripeWebhookConfigured],['Automatic delivery email',h.emailDeliveryConfigured]];$('#config-status').innerHTML=items.map(x=>'<div class="config"><strong>'+esc(x[0])+'</strong><small class="'+(x[1]?'ok':'warn')+'">'+(x[1]?'Configured':'Needs setup')+'</small></div>').join('')}catch{$('#system-state').textContent='Server check failed'}}
+$('#test-ai').addEventListener('click',async()=>{
+ const button=$('#test-ai'),status=$('#ai-test-result');
+ button.disabled=true;status.textContent='Testing OpenAI connection…';
+ try{
+  const result=await api('/api/ai/test',{method:'POST',body:JSON.stringify({})});
+  status.textContent='Connected · '+result.model;
+  status.className='ok';
+ }catch(error){
+  status.textContent=error.message;
+  status.className='warn';
+ }finally{button.disabled=false}
+});
 function view(name){$$('.view').forEach(x=>x.classList.add('hidden'));$('#view-'+name).classList.remove('hidden');$$('.nav').forEach(x=>x.classList.toggle('active',x.dataset.view===name));const names={dashboard:'Command Center',opportunities:'Opportunity Finder',content:'Content Studio',campaigns:'Campaign Planner',revenue:'Revenue & Profit',approvals:'Approval Queue',golf:'Golf Gear Opportunities',commerce:'Products & Checkout',settings:'Settings'};$('#page-title').textContent=names[name]||'Command Center'}
 $$('.nav').forEach(b=>b.addEventListener('click',()=>view(b.dataset.view)));$$('[data-go]').forEach(b=>b.addEventListener('click',()=>view(b.dataset.go)));$('#new-content').onclick=()=>view('content');
 function addActivity(message){state.activity.unshift({message,at:new Date().toISOString()});state.activity=state.activity.slice(0,40)}
