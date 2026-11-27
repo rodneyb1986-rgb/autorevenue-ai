@@ -73,6 +73,13 @@ app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async
     }
     next.activity.unshift({ message: 'Stripe event processed: ' + event.type, at: now });
     await saveState(next);
+    // Send a digital delivery email only after Stripe confirms payment. Retries are idempotent.
+    if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
+      const paidOrder = state.orders.find(x => x.checkoutSessionId === event.data.object.id);
+      if (paidOrder && paidOrder.paymentStatus === 'paid' && paidOrder.deliveryToken && paidOrder.customerEmail && paidOrder.deliveryEmailStatus !== 'sent') {
+        await sendDigitalDeliveryEmail(paidOrder);
+      }
+    }
     res.json({ received: true });
   } catch (error) {
     console.error('Stripe webhook error:', error.message);
@@ -186,6 +193,7 @@ app.get('/api/health', (req, res) => res.json({
   authConfigured: Boolean(process.env.ADMIN_PASSWORD),
   stripeTestConfigured: Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_SECRET_KEY.startsWith('sk_test_')),
   stripeWebhookConfigured: Boolean(process.env.STRIPE_WEBHOOK_SECRET),
+  emailDeliveryConfigured: Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM),
   aiConfigured: Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL),
   persistentStorage: Boolean(process.env.DATABASE_URL), storageMode: pool ? 'postgres' : 'local-json', storageReady
 }));
@@ -198,6 +206,45 @@ app.post('/api/login', limited('login', 10, 15 * 60 * 1000), (req, res) => {
 });
 app.post('/api/logout', requireAuth, (req, res) => { sessions.delete(req.sessionToken); res.json({ ok: true }); });
 
+async function sendDigitalDeliveryEmail(order) {
+  if (!process.env.RESEND_API_KEY || !process.env.EMAIL_FROM) {
+    console.log('Digital delivery email skipped: RESEND_API_KEY or EMAIL_FROM is not configured.');
+    return { sent: false, reason: 'not_configured' };
+  }
+  const next = structuredClone(state);
+  const current = next.orders.find(x => x.checkoutSessionId === order.checkoutSessionId);
+  if (!current || current.deliveryEmailStatus === 'sent') return { sent: Boolean(current?.deliveryEmailStatus === 'sent') };
+  const product = next.products.find(x => x.id === current.productId && x.type === 'digital');
+  if (!product || !product.deliveryContent) return { sent: false, reason: 'missing_product_content' };
+  const baseUrl = String(process.env.APP_BASE_URL || '').replace(/\/$/, '');
+  if (!baseUrl || !/^https:\/\//i.test(baseUrl)) return { sent: false, reason: 'missing_app_base_url' };
+  const downloadUrl = baseUrl + '/download/' + current.deliveryToken;
+  const subject = 'Your download: ' + (product.name || 'Your digital purchase');
+  const html = '<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;line-height:1.6;color:#172033"><h2>Thank you for your purchase</h2><p>Your payment is confirmed. Your digital product is ready.</p><p><a href="' + downloadUrl + '" style="display:inline-block;padding:12px 18px;background:#2563eb;color:#fff;text-decoration:none;border-radius:8px">Download your product</a></p><p>If the button does not work, copy this link into your browser:</p><p>' + downloadUrl + '</p><p>Thank you,<br>AutoRevenue</p></div>';
+  try {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + process.env.RESEND_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: process.env.EMAIL_FROM, to: [current.customerEmail], subject, html })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error('Email provider returned HTTP ' + response.status + (result.message ? ': ' + result.message : ''));
+    current.deliveryEmailStatus = 'sent';
+    current.deliveryEmailId = String(result.id || '');
+    current.deliveryEmailSentAt = new Date().toISOString();
+    current.deliveryEmailError = '';
+    await saveState(next);
+    console.log('Digital delivery email sent for order ' + current.checkoutSessionId);
+    return { sent: true };
+  } catch (error) {
+    current.deliveryEmailStatus = 'failed';
+    current.deliveryEmailError = String(error.message || 'Email send failed').slice(0, 500);
+    current.deliveryEmailAttemptedAt = new Date().toISOString();
+    await saveState(next);
+    console.error('Digital delivery email failed:', error.message);
+    return { sent: false, reason: 'send_failed' };
+  }
+}
 function getStripeClient() {
   if (!process.env.STRIPE_SECRET_KEY) throw new Error('Stripe is not configured. Add STRIPE_SECRET_KEY in Render.');
   if (!process.env.STRIPE_SECRET_KEY.startsWith('sk_test_')) throw new Error('Only Stripe test-mode keys are accepted by this build.');
