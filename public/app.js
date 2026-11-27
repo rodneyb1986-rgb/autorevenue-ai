@@ -35,7 +35,8 @@ function render(){
   const details=(order.customerEmail||'No customer email')+' · '+money(order.amountTotal)+' '+esc(order.currency||'USD')+' · '+(order.mode==='subscription'?'Subscription':'One-time');
   const status=(order.paymentStatus||'unknown')+' · Fulfillment: '+(order.fulfillmentStatus||'pending');
   const action=order.paymentStatus==='paid'&&order.fulfillmentStatus!=='fulfilled'?[['Mark fulfilled','commerce-fulfill:'+order.id]]:[];
-  return record(order.productName||'Stripe order',details,status,action);
+  const delivery=order.deliveryToken?' · Download: '+location.origin+'/download/'+order.deliveryToken:'';
+  return record(order.productName||'Stripe order',details+delivery,status,action);
  }).join('')||'<div class="empty">No Stripe orders received yet. Completed payments will appear here after the webhook is delivered.</div>';
  $('#approval-list').innerHTML=state.approvals.map((x,i)=>record(x.title,x.details||'',x.status,x.status==='Pending'?[['Approve','approve:'+i],['Reject','reject:'+i]]:[])).join('')||'<div class="empty">No approvals waiting.</div>';
  $('#setting-niche').value=state.settings.niche||'';$('#setting-goal').value=state.settings.monthlyGoal??500;$('#setting-autonomy').value=state.settings.autonomy||'approval';$$('.strategy').forEach(c=>c.checked=(state.settings.strategies||[]).includes(c.value));
@@ -108,11 +109,11 @@ $('#save-settings').onclick=async()=>{state.settings={...state.settings,niche:$(
 async function start(){if(!token){showLogin();return}try{showApp();await loadState()}catch{showLogin()}}start();
 
 $('#commerce-create').onclick=async()=>{
- const name=$('#commerce-name').value.trim(),amount=Number($('#commerce-price').value),type=$('#commerce-type').value,billing=$('#commerce-billing').value;
+ const name=$('#commerce-name').value.trim(),amount=Number($('#commerce-price').value),type=$('#commerce-type').value,billing=$('#commerce-billing').value,deliveryContent=$('#commerce-delivery-content').value.trim();
  if(!name||!Number.isFinite(amount)||amount<=0)return alert('Enter a product name and a valid price.');
- if(type==='physical'&&billing==='subscription')return alert('Recurring physical-product orders are not enabled. Choose one-time purchase.');
+ if(type==='physical'&&billing==='subscription')return alert('Recurring physical-product orders are not enabled. Choose one-time purchase.');if(type==='digital'&&!deliveryContent)return alert('Add the digital content customers will receive after payment.');
  const button=$('#commerce-create'),out=$('#commerce-result');button.disabled=true;out.classList.remove('hidden');out.textContent='Saving product…';
- try{const r=await api('/api/commerce/products',{method:'POST',body:JSON.stringify({name,description:$('#commerce-description').value,type,billing,amount,interval:$('#commerce-interval').value})});state.products=state.products||[];state.products.unshift(r.product);addActivity('Created product: '+name);await save();out.textContent='Product saved. Create a test checkout when Stripe test credentials are configured.';$('#commerce-name').value='';$('#commerce-description').value='';$('#commerce-price').value='';}
+ try{const r=await api('/api/commerce/products',{method:'POST',body:JSON.stringify({name,description:$('#commerce-description').value,deliveryContent,type,billing,amount,interval:$('#commerce-interval').value})});state.products=state.products||[];state.products.unshift(r.product);addActivity('Created product: '+name);await save();out.textContent='Product saved. Create a test checkout when Stripe test credentials are configured.';$('#commerce-name').value='';$('#commerce-description').value='';$('#commerce-delivery-content').value='';$('#commerce-price').value='';}
  catch(e){out.textContent=e.message}finally{button.disabled=false}
 };
 $('#commerce-orders').addEventListener('click',async e=>{
