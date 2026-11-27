@@ -270,8 +270,65 @@ function getStripeClient() {
   if (!process.env.STRIPE_SECRET_KEY.startsWith('sk_test_')) throw new Error('Only Stripe test-mode keys are accepted by this build.');
   return new Stripe(process.env.STRIPE_SECRET_KEY);
 }
+async function getStripeTransactionSnapshot(stripe) {
+  const [balance, balanceTransactions, charges, payouts] = await Promise.all([
+    stripe.balance.retrieve(),
+    stripe.balanceTransactions.list({ limit: 100 }),
+    stripe.charges.list({ limit: 100 }),
+    stripe.payouts.list({ limit: 100 })
+  ]);
+  const chargeById = new Map(charges.data.map(charge => [charge.id, charge]));
+  const transactions = balanceTransactions.data.map(tx => {
+    const sourceId = typeof tx.source === 'string' ? tx.source : tx.source?.id || '';
+    const charge = chargeById.get(sourceId);
+    return {
+      id: tx.id,
+      type: String(tx.type || 'other'),
+      description: String(tx.description || charge?.description || ''),
+      amount: tx.amount / 100,
+      fee: tx.fee / 100,
+      net: tx.net / 100,
+      currency: String(tx.currency || 'usd').toUpperCase(),
+      status: String(tx.status || 'unknown'),
+      created: tx.created,
+      availableOn: tx.available_on || null,
+      sourceId,
+      customerEmail: charge?.billing_details?.email || charge?.receipt_email || '',
+      paymentStatus: charge?.status || '',
+      refunded: charge ? charge.amount_refunded / 100 : null
+    };
+  });
+  return {
+    mode: 'test',
+    currency: 'USD',
+    balance: {
+      available: balance.available.map(x => ({ currency: x.currency.toUpperCase(), amount: x.amount / 100 })),
+      pending: balance.pending.map(x => ({ currency: x.currency.toUpperCase(), amount: x.amount / 100 }))
+    },
+    transactions,
+    payouts: payouts.data.map(p => ({
+      id: p.id, amount: p.amount / 100, currency: p.currency.toUpperCase(),
+      status: p.status, arrivalDate: p.arrival_date, created: p.created,
+      method: p.method, type: p.type, description: p.description || ''
+    })),
+    hasMoreTransactions: balanceTransactions.has_more,
+    hasMoreCharges: charges.has_more,
+    hasMorePayouts: payouts.has_more,
+    fetchedAt: new Date().toISOString()
+  };
+}
 app.get('/api/commerce/products', requireAuth, (req, res) => res.json({ products: state.products || [] }));
 app.get('/api/commerce/orders', requireAuth, (req, res) => res.json({ orders: state.orders || [], subscriptions: state.subscriptions || [] }));
+app.get('/api/stripe/transactions', requireAuth, limited('stripe-transactions', 6, 5 * 60 * 1000), async (req, res) => {
+  try {
+    const snapshot = await getStripeTransactionSnapshot(getStripeClient());
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ok: true, ...snapshot });
+  } catch (error) {
+    console.error('Stripe transaction history failed:', error.message);
+    res.status(502).json({ error: 'Could not load Stripe test transaction history. Check the Stripe test key and Render logs.' });
+  }
+});
 app.get('/download/:token', (req, res) => {
   const token = String(req.params.token || '');
   if (!/^[a-f0-9]{64}$/.test(token)) return res.status(404).send('Download not found.');
@@ -550,7 +607,20 @@ app.post('/api/optimization/analyze', requireAuth, limited('optimization', 3, 60
       contentAssets: (state.content || []).length,
       automationRuns: (state.automationRuns || []).length,
       products: (state.products || []).filter(p => p.active).length,
-      paidOrders: (state.orders || []).filter(o => o.paymentStatus === 'paid').length
+      paidOrders: (state.orders || []).filter(o => o.paymentStatus === 'paid').length,
+      stripeTransactions: (() => null)()
+    };
+    const stripeSnapshot = await getStripeTransactionSnapshot(getStripeClient());
+    snapshot.stripeTransactions = {
+      mode: stripeSnapshot.mode,
+      availableBalance: stripeSnapshot.balance.available,
+      pendingBalance: stripeSnapshot.balance.pending,
+      transactionCount: stripeSnapshot.transactions.length,
+      grossCharges: Number(stripeSnapshot.transactions.filter(t => t.type === 'charge').reduce((n,t)=>n+t.amount,0).toFixed(2)),
+      refunds: Number(Math.abs(stripeSnapshot.transactions.filter(t => t.type === 'refund').reduce((n,t)=>n+t.amount,0)).toFixed(2)),
+      fees: Number(stripeSnapshot.transactions.reduce((n,t)=>n+t.fee,0).toFixed(2)),
+      netBalanceActivity: Number(stripeSnapshot.transactions.reduce((n,t)=>n+t.net,0).toFixed(2)),
+      payouts: stripeSnapshot.payouts.slice(0, 50)
     };
     const OpenAI = require('openai'), client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 30000, maxRetries: 0 });
     const system = 'You are the revenue optimization analyst for a small business. Return only valid JSON. Analyze only the supplied workspace data. Never invent performance, market demand, conversion rates, revenue, costs, customer counts, or causes. Clearly distinguish observed facts from hypotheses. Campaign-attributed revenue is not necessarily collected cash; do not add it to the ledger. Do not recommend ad spend, purchases, subscriptions, or paid services without explicitly marking them as requiring owner approval. Prioritize low-cost, measurable actions. If data is sparse, say so and recommend what to measure before drawing conclusions.';
