@@ -248,7 +248,7 @@ app.get('/api/health', (req, res) => res.json({
   stripeWebhookConfigured: Boolean(process.env.STRIPE_WEBHOOK_SECRET),
   emailDeliveryConfigured: Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM),
   aiConfigured: Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL),
-  persistentStorage: Boolean(process.env.DATABASE_URL), storageMode: pool ? 'postgres' : 'local-json', storageReady, sessionStorage: pool ? 'postgres' : 'memory', aiCostRatesConfigured: Boolean(Number(process.env.OPENAI_INPUT_USD_PER_1M) || Number(process.env.OPENAI_OUTPUT_USD_PER_1M))
+  persistentStorage: Boolean(process.env.DATABASE_URL), storageMode: pool ? 'postgres' : 'local-json', storageReady, sessionStorage: pool ? 'postgres' : 'memory', aiCostRatesConfigured: Number(process.env.OPENAI_INPUT_USD_PER_1M) > 0 && Number(process.env.OPENAI_OUTPUT_USD_PER_1M) > 0
 }));
 app.post('/api/login', limited('login', 10, 15 * 60 * 1000), async (req, res) => {
   const password = String(req.body?.password || '');
