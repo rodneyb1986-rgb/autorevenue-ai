@@ -397,6 +397,13 @@ app.get('/api/commerce/checkout-session', requireAuth, limited('checkout-verify'
     }
     if (!existing) next.activity.unshift({ message: 'Stripe checkout verified and order recorded: ' + order.productName, at: now });
     await saveState(next);
+    // Checkout verification is also a successful-payment path (for example, when
+    // the customer returns to the success page before a webhook is processed).
+    // Send digital fulfillment here too; sendDigitalDeliveryEmail skips orders
+    // already marked as sent, preventing a second email after the webhook arrives.
+    if (order.paymentStatus === 'paid' && order.deliveryToken && order.customerEmail) {
+      await sendDigitalDeliveryEmail(order);
+    }
     res.setHeader('Cache-Control', 'no-store');
     res.json({ ok: true, verified: true, paymentStatus: order.paymentStatus, order });
   } catch (error) {
