@@ -41,6 +41,7 @@ function render(){
  $('#month-income').textContent=money(monthIncome);$('#month-expenses').textContent=money(monthExpense);$('#month-net').textContent=money(monthNet);$('#month-goal').textContent=goal?money(goal):'Not set';$('#month-goal-progress').textContent=goal?goalPct.toFixed(1)+'% of monthly net goal':'Set a monthly goal in Settings';$('#month-goal-bar').style.width=goal?goalPct+'%':'0%';
  $('#actual-income').textContent=money(income);$('#actual-expenses').textContent=money(expense);$('#actual-net').textContent=money(income-expense);$('#campaign-attributed').textContent=money(campaignRevenue);$('#campaign-spend').textContent=money(campaignSpend);$('#campaign-net').textContent=money(campaignRevenue-campaignSpend);
  $('#entry-list').innerHTML=state.revenue.slice().reverse().map(x=>record((x.type==='Income'?'+':'−')+money(x.amount)+' · '+x.source,x.date,x.type,[])).join('')||'<div class="empty">No transactions recorded.</div>';
+ const stripeList=$('#stripe-transaction-list');if(stripeList&&!stripeList.dataset.loaded)stripeList.innerHTML='<div class="empty">Select Refresh Stripe transactions to load the latest records from Stripe.</div>';
  $('#golf-list').innerHTML=(state.golfOpportunities||[]).map((x,i)=>record(x.brand+' · '+x.type,x.equipment+'\\n'+(x.notes||'')+'\\n'+(x.url||''),'<select class="golf-status" data-golf-status="'+esc(x.id)+'">'+['To research','Eligible','Application drafted','Applied (manual)','Follow-up','Accepted','Declined','Received'].map(v=>'<option'+((x.status||'To research')===v?' selected':'')+'>'+v+'</option>').join('')+'</select>',[['Delete','golf-delete:'+i]])).join('')||'<div class="empty">No golf gear opportunities saved yet.</div>';
  $('#commerce-list').innerHTML=(state.products||[]).map((x,i)=>record(x.name,(x.type==='physical'?'Physical':'Digital')+' · '+(x.billing==='subscription'?'Subscription · '+x.interval:'One-time')+' · '+money(x.amount),x.active?'Active':'Inactive',[['Create test checkout','commerce-checkout:'+x.id]])).join('')||'<div class="empty">No products created yet.</div>';
  $('#commerce-orders').innerHTML=(state.orders||[]).map(order=>{
@@ -121,6 +122,30 @@ $('#save-campaign-metrics').onclick=async()=>{
 };
 $('#metric-campaign').addEventListener('change',()=>render());
 
+$('#refresh-stripe-transactions').addEventListener('click',async()=>{
+ const button=$('#refresh-stripe-transactions'),status=$('#stripe-transaction-status'),summary=$('#stripe-balance-summary'),list=$('#stripe-transaction-list');
+ button.disabled=true;status.textContent='Loading read-only Stripe test data…';list.innerHTML='<div class="empty">Fetching payments, refunds, fees and payouts…</div>';
+ try{
+  const data=await api('/api/stripe/transactions');
+  const totals=data.transactions.reduce((a,t)=>{if(t.type==='charge')a.gross+=t.amount;if(t.type==='refund')a.refunds+=Math.abs(t.amount);a.fees+=t.fee;a.net+=t.net;return a;},{gross:0,refunds:0,fees:0,net:0});
+  const cards=[
+   ['Available balance',(data.balance.available||[]).map(x=>money(x.amount)+' '+x.currency).join(' · ')||'—'],
+   ['Pending balance',(data.balance.pending||[]).map(x=>money(x.amount)+' '+x.currency).join(' · ')||'—'],
+   ['Gross charges',money(totals.gross)],['Refunds',money(totals.refunds)],
+   ['Processing fees',money(totals.fees)],['Net balance activity',money(totals.net)]
+  ];
+  summary.innerHTML=cards.map(x=>'<div class="metric"><span>'+esc(x[0])+'</span><strong>'+esc(x[1])+'</strong></div>').join('');
+  const rows=(data.transactions||[]).map(t=>{
+   const date=new Date(t.created*1000).toLocaleString(),sign=t.amount<0?'−':'+';
+   const detail=[t.description,t.customerEmail,t.sourceId].filter(Boolean).join(' · ');
+   return '<div class="record"><div><strong>'+esc(t.type.replaceAll('_',' '))+' · '+esc(t.currency)+' '+esc(money(Math.abs(t.amount)))+'</strong><p>'+esc(detail||'Stripe balance transaction')+'</p><small>'+esc(date)+' · '+esc(t.status)+' · Fee '+esc(money(t.fee))+' · Net '+esc(money(t.net))+(t.refunded!==null?' · Refunded '+esc(money(t.refunded)):'')+'</small></div></div>';
+  });
+  const payoutRows=(data.payouts||[]).map(p=>'<div class="record"><div><strong>Payout · '+esc(p.currency)+' '+esc(money(p.amount))+'</strong><p>'+esc(p.id)+' · '+esc(p.method||'')+'</p><small>'+esc(p.status)+' · Created '+esc(new Date(p.created*1000).toLocaleString())+(p.arrivalDate?' · Expected '+esc(new Date(p.arrivalDate*1000).toLocaleDateString()):'')+'</small></div></div>');
+  list.innerHTML='<p class="muted">Latest '+data.transactions.length+' balance transactions'+(data.hasMoreTransactions?' · More older transactions are available in Stripe':'')+'</p>'+(rows.join('')||'<div class="empty">No balance transactions found in this Stripe test account.</div>')+'<div class="panel-head subhead"><h3>Recent payouts</h3></div>'+(payoutRows.join('')||'<div class="empty">No payouts found.</div>');
+  list.dataset.loaded='true';status.textContent='Updated '+new Date(data.fetchedAt).toLocaleString()+' · Stripe test mode';
+ }catch(error){status.textContent=error.message;list.innerHTML='<div class="empty">'+esc(error.message)+'</div>'}
+ finally{button.disabled=false}
+});
 $('#run-optimization').addEventListener('click',async()=>{
  const button=$('#run-optimization'),out=$('#optimization-result');
  button.disabled=true;out.classList.remove('hidden');out.textContent='Analyzing actual ledger entries, campaign performance and saved opportunities…';
