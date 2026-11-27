@@ -31,6 +31,12 @@ function render(){
  $('#entry-list').innerHTML=state.revenue.slice().reverse().map(x=>record((x.type==='Income'?'+':'−')+money(x.amount)+' · '+x.source,x.date,x.type,[])).join('')||'<div class="empty">No transactions recorded.</div>';
  $('#golf-list').innerHTML=(state.golfOpportunities||[]).map((x,i)=>record(x.brand+' · '+x.type,x.equipment+'\\n'+(x.notes||'')+'\\n'+(x.url||''),'<select class="golf-status" data-golf-status="'+esc(x.id)+'">'+['To research','Eligible','Application drafted','Applied (manual)','Follow-up','Accepted','Declined','Received'].map(v=>'<option'+((x.status||'To research')===v?' selected':'')+'>'+v+'</option>').join('')+'</select>',[['Delete','golf-delete:'+i]])).join('')||'<div class="empty">No golf gear opportunities saved yet.</div>';
  $('#commerce-list').innerHTML=(state.products||[]).map((x,i)=>record(x.name,(x.type==='physical'?'Physical':'Digital')+' · '+(x.billing==='subscription'?'Subscription · '+x.interval:'One-time')+' · '+money(x.amount),x.active?'Active':'Inactive',[['Create test checkout','commerce-checkout:'+x.id]])).join('')||'<div class="empty">No products created yet.</div>';
+ $('#commerce-orders').innerHTML=(state.orders||[]).map(order=>{
+  const details=(order.customerEmail||'No customer email')+' · '+money(order.amountTotal)+' '+esc(order.currency||'USD')+' · '+(order.mode==='subscription'?'Subscription':'One-time');
+  const status=(order.paymentStatus||'unknown')+' · Fulfillment: '+(order.fulfillmentStatus||'pending');
+  const action=order.paymentStatus==='paid'&&order.fulfillmentStatus!=='fulfilled'?[['Mark fulfilled','commerce-fulfill:'+order.id]]:[];
+  return record(order.productName||'Stripe order',details,status,action);
+ }).join('')||'<div class="empty">No Stripe orders received yet. Completed payments will appear here after the webhook is delivered.</div>';
  $('#approval-list').innerHTML=state.approvals.map((x,i)=>record(x.title,x.details||'',x.status,x.status==='Pending'?[['Approve','approve:'+i],['Reject','reject:'+i]]:[])).join('')||'<div class="empty">No approvals waiting.</div>';
  $('#setting-niche').value=state.settings.niche||'';$('#setting-goal').value=state.settings.monthlyGoal??500;$('#setting-autonomy').value=state.settings.autonomy||'approval';$$('.strategy').forEach(c=>c.checked=(state.settings.strategies||[]).includes(c.value));
  $$('[data-action]').forEach(b=>b.onclick=()=>handleAction(b.dataset.action));
@@ -109,6 +115,12 @@ $('#commerce-create').onclick=async()=>{
  try{const r=await api('/api/commerce/products',{method:'POST',body:JSON.stringify({name,description:$('#commerce-description').value,type,billing,amount,interval:$('#commerce-interval').value})});state.products=state.products||[];state.products.unshift(r.product);addActivity('Created product: '+name);await save();out.textContent='Product saved. Create a test checkout when Stripe test credentials are configured.';$('#commerce-name').value='';$('#commerce-description').value='';$('#commerce-price').value='';}
  catch(e){out.textContent=e.message}finally{button.disabled=false}
 };
+$('#commerce-orders').addEventListener('click',async e=>{
+ const button=e.target.closest('[data-action^="commerce-fulfill:"]');if(!button)return;
+ const orderId=button.dataset.action.slice('commerce-fulfill:'.length);button.disabled=true;
+ try{const r=await api('/api/commerce/orders/'+encodeURIComponent(orderId)+'/fulfill',{method:'POST'});state.orders=state.orders||[];const i=state.orders.findIndex(x=>x.id===orderId||x.checkoutSessionId===orderId);if(i>=0)state.orders[i]=r.order;addActivity('Marked Stripe order fulfilled');await save();}
+ catch(err){alert(err.message);button.disabled=false}
+});
 $('#commerce-list').addEventListener('click',async e=>{
  const button=e.target.closest('[data-action^="commerce-checkout:"]');if(!button)return;
  const productId=button.dataset.action.split(':')[1],email=$('#commerce-email').value.trim();
