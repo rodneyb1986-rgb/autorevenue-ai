@@ -44,6 +44,7 @@ app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async
         currency: String(session.currency || 'usd').toUpperCase(),
         paymentStatus: session.payment_status || 'unknown',
         fulfillmentStatus: existing?.fulfillmentStatus || 'pending',
+        deliveryToken: existing?.deliveryToken || (session.metadata?.productType === 'digital' ? crypto.randomBytes(32).toString('hex') : null),
         status: 'paid', updatedAt: now, createdAt: existing?.createdAt || now
       };
       if (existing) Object.assign(existing, order); else next.orders.unshift(order);
@@ -204,6 +205,18 @@ function getStripeClient() {
 }
 app.get('/api/commerce/products', requireAuth, (req, res) => res.json({ products: state.products || [] }));
 app.get('/api/commerce/orders', requireAuth, (req, res) => res.json({ orders: state.orders || [], subscriptions: state.subscriptions || [] }));
+app.get('/download/:token', (req, res) => {
+  const token = String(req.params.token || '');
+  if (!/^[a-f0-9]{64}$/.test(token)) return res.status(404).send('Download not found.');
+  const order = (state.orders || []).find(x => x.deliveryToken === token && x.paymentStatus === 'paid');
+  if (!order) return res.status(404).send('Download not found or payment not verified.');
+  const product = (state.products || []).find(x => x.id === order.productId && x.type === 'digital');
+  if (!product || !product.deliveryContent) return res.status(404).send('The digital file has not been prepared for this product.');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="' + String(product.name || 'digital-product').replace(/[^a-z0-9_-]/gi, '-').slice(0, 60) + '.txt"');
+  res.send(product.deliveryContent);
+});
 app.post('/api/commerce/orders/:orderId/fulfill', requireAuth, async (req, res) => {
   try {
     const next = structuredClone(state);
@@ -223,13 +236,15 @@ app.post('/api/commerce/products', requireAuth, async (req, res) => {
     const body = req.body || {};
     const name = String(body.name || '').trim().slice(0, 160);
     const description = String(body.description || '').trim().slice(0, 2000);
+    const deliveryContent = String(body.deliveryContent || '').trim().slice(0, 50000);
     const type = body.type === 'physical' ? 'physical' : 'digital';
     const billing = body.billing === 'subscription' ? 'subscription' : 'one_time';
     const amount = Number(body.amount);
     const interval = ['month', 'year'].includes(body.interval) ? body.interval : 'month';
     if (!name || !Number.isFinite(amount) || amount <= 0 || amount > 1000000) return res.status(400).json({ error: 'Enter a product name and a valid positive price.' });
     if (billing === 'subscription' && type === 'physical') return res.status(400).json({ error: 'Recurring physical-product orders are not enabled yet. Use one-time checkout for shipped goods.' });
-    const product = { id: crypto.randomUUID(), name, description, type, billing, amount: Math.round(amount * 100) / 100, currency: 'usd', interval: billing === 'subscription' ? interval : null, active: true, createdAt: new Date().toISOString() };
+    if (type === 'digital' && !deliveryContent) return res.status(400).json({ error: 'Add the digital product content customers should receive after payment.' });
+    const product = { id: crypto.randomUUID(), name, description, deliveryContent: type === 'digital' ? deliveryContent : '', type, billing, amount: Math.round(amount * 100) / 100, currency: 'usd', interval: billing === 'subscription' ? interval : null, active: true, createdAt: new Date().toISOString() };
     const next = structuredClone(state); next.products.unshift(product);
     next.activity.unshift({ message: 'Created commerce product: ' + name, at: product.createdAt });
     await saveState(next);
