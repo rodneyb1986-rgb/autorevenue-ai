@@ -67,13 +67,16 @@ function render(){
  $('#commerce-list').innerHTML=(state.products||[]).map((x,i)=>record(x.name,(x.type==='physical'?'Physical':'Digital')+' · '+(x.billing==='subscription'?'Subscription · '+x.interval:'One-time')+' · '+money(x.amount),x.active?'Active':'Inactive',[['Create test checkout','commerce-checkout:'+x.id]])).join('')||'<div class="empty">No products created yet.</div>';
  $('#commerce-orders').innerHTML=(state.orders||[]).map(order=>{
   const details=(order.customerEmail||'No customer email')+' · '+money(order.amountTotal)+' '+esc(order.currency||'USD')+' · '+(order.mode==='subscription'?'Subscription':'One-time');
-  const emailStatus=order.deliveryToken?' · Email: '+(order.deliveryEmailStatus||'not sent'):'';
+  const emailState=order.deliveryEmailStatus||'not sent';
+  const emailStatus=order.deliveryToken?' · Email: '+emailState:'';
   const status=(order.paymentStatus||'unknown')+' · Fulfillment: '+(order.fulfillmentStatus||'pending')+emailStatus;
+  const emailMeta=order.deliveryToken?'<small class="delivery-email-meta">'+(emailState==='sent'?'Email submitted to Resend'+(order.deliveryEmailSentAt?' · '+esc(new Date(order.deliveryEmailSentAt).toLocaleString()):''):emailState==='failed'?'Email failed · '+esc(order.deliveryEmailError||'No provider details'):'Email has not been sent yet')+'</small>':'';
   const action=order.paymentStatus==='paid'&&order.fulfillmentStatus!=='fulfilled'?[['Mark fulfilled','commerce-fulfill:'+order.id]]:[];
+  if(order.deliveryToken&&order.paymentStatus==='paid'&&emailState!=='sent')action.push(['Retry delivery email','commerce-email-retry:'+order.id]);
   const delivery=order.deliveryToken
    ? '<div class="download-row"><a class="btn secondary" href="/download/'+encodeURIComponent(order.deliveryToken)+'" target="_blank" rel="noopener">Download digital product</a><button class="mini" type="button" data-copy-download="'+esc(location.origin+'/download/'+order.deliveryToken)+'">Copy download link</button></div>'
    : '';
-  return '<div class="record"><div><strong>'+esc(order.productName||'Stripe order')+'</strong><p>'+details+'</p><small>'+esc(status)+'</small>'+delivery+'</div><div class="record-actions">'+action.map(a=>'<button class="mini" data-action="'+esc(a[1])+'">'+esc(a[0])+'</button>').join('')+'</div></div>';
+  return '<div class="record"><div><strong>'+esc(order.productName||'Stripe order')+'</strong><p>'+details+'</p><small>'+esc(status)+'</small>'+emailMeta+delivery+'</div><div class="record-actions">'+action.map(a=>'<button class="mini" data-action="'+esc(a[1])+'">'+esc(a[0])+'</button>').join('')+'</div></div>';
  }).join('')||'<div class="empty">No Stripe orders received yet. Completed payments will appear here after the webhook is delivered.</div>';
  $('#approval-list').innerHTML=state.approvals.map((x,i)=>record(x.title,x.details||'',x.status,x.status==='Pending'?[['Approve','approve:'+i],['Reject','reject:'+i]]:[])).join('')||'<div class="empty">No approvals waiting.</div>';
  const aiRows=Array.isArray(state.aiUsage)?state.aiUsage:[],today=new Date().toISOString().slice(0,10),month=today.slice(0,7),todayRows=aiRows.filter(x=>String(x.createdAt||'').startsWith(today)),monthRows=aiRows.filter(x=>String(x.createdAt||'').startsWith(month)),tokens=rows=>rows.reduce((n,x)=>n+Number(x.totalTokens||0),0);
@@ -208,6 +211,8 @@ $('#commerce-create').onclick=async()=>{
  catch(e){out.textContent=e.message}finally{button.disabled=false}
 };
 $('#commerce-orders').addEventListener('click',async e=>{
+ const retry=e.target.closest('[data-action^="commerce-email-retry:"]');
+ if(retry){const orderId=retry.dataset.action.slice('commerce-email-retry:'.length);retry.disabled=true;retry.textContent='Sending…';try{const r=await api('/api/commerce/orders/'+encodeURIComponent(orderId)+'/resend-email',{method:'POST'});const i=state.orders.findIndex(x=>x.id===orderId||x.checkoutSessionId===orderId);if(i>=0)state.orders[i]=r.order;addActivity('Digital delivery email sent for '+(r.order.productName||'order'));render();}catch(err){alert(err.message);retry.disabled=false;retry.textContent='Retry delivery email';}return;}
  const button=e.target.closest('[data-action^="commerce-fulfill:"]');if(!button)return;
  const orderId=button.dataset.action.slice('commerce-fulfill:'.length);button.disabled=true;
  try{const r=await api('/api/commerce/orders/'+encodeURIComponent(orderId)+'/fulfill',{method:'POST'});state.orders=state.orders||[];const i=state.orders.findIndex(x=>x.id===orderId||x.checkoutSessionId===orderId);if(i>=0)state.orders[i]=r.order;addActivity('Marked Stripe order fulfilled');await save();}
