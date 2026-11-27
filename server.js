@@ -357,6 +357,20 @@ async function getStripeTransactionSnapshot(stripe) {
 }
 app.get('/api/commerce/products', requireAuth, (req, res) => res.json({ products: state.products || [] }));
 app.get('/api/commerce/orders', requireAuth, (req, res) => res.json({ orders: state.orders || [], subscriptions: state.subscriptions || [] }));
+app.post('/api/commerce/orders/:orderId/resend-email', requireAuth, limited('delivery-email-retry', 10, 60 * 60 * 1000), async (req, res) => {
+  const orderId = String(req.params.orderId || '');
+  const order = (state.orders || []).find(x => x.id === orderId || x.checkoutSessionId === orderId);
+  if (!order) return res.status(404).json({ error: 'Order not found.' });
+  if (order.paymentStatus !== 'paid') return res.status(409).json({ error: 'Only paid orders can receive digital delivery.' });
+  if (!order.deliveryToken || !order.customerEmail) return res.status(409).json({ error: 'This order is missing its digital delivery token or customer email.' });
+  if (order.deliveryEmailStatus === 'sent') return res.status(409).json({ error: 'This delivery email is already marked sent.' });
+  const product = (state.products || []).find(x => x.id === order.productId && x.type === 'digital');
+  if (!product || !product.deliveryContent) return res.status(409).json({ error: 'The digital product content is unavailable.' });
+  const result = await sendDigitalDeliveryEmail(order);
+  const updated = (state.orders || []).find(x => x.checkoutSessionId === order.checkoutSessionId);
+  if (!result.sent) return res.status(502).json({ error: updated?.deliveryEmailError || 'Email delivery could not be completed.', order: updated || order });
+  res.json({ ok: true, order: updated || order });
+});
 app.get('/api/commerce/checkout-session', requireAuth, limited('checkout-verify', 30, 60 * 60 * 1000), async (req, res) => {
   try {
     const sessionId = String(req.query.session_id || '').trim();
