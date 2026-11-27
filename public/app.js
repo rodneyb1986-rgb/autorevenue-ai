@@ -142,6 +142,19 @@ $('#refresh-stripe-transactions').addEventListener('click',async()=>{
   });
   const payoutRows=(data.payouts||[]).map(p=>'<div class="record"><div><strong>Payout · '+esc(p.currency)+' '+esc(money(p.amount))+'</strong><p>'+esc(p.id)+' · '+esc(p.method||'')+'</p><small>'+esc(p.status)+' · Created '+esc(new Date(p.created*1000).toLocaleString())+(p.arrivalDate?' · Expected '+esc(new Date(p.arrivalDate*1000).toLocaleDateString()):'')+'</small></div></div>');
   list.innerHTML='<p class="muted">Latest '+data.transactions.length+' balance transactions'+(data.hasMoreTransactions?' · More older transactions are available in Stripe':'')+'</p>'+(rows.join('')||'<div class="empty">No balance transactions found in this Stripe test account.</div>')+'<div class="panel-head subhead"><h3>Recent payouts</h3></div>'+(payoutRows.join('')||'<div class="empty">No payouts found.</div>');
+  const rec=data.reconciliation||{},fmtTotals=totals=>Object.entries(totals||{}).map(([currency,amount])=>money(amount)+' '+currency).join(' · ')||'—';
+  const recRows=[
+   ['Paid app orders',String(rec.paidOrderCount||0)],
+   ['Matched to Stripe',String(rec.matchedOrderCount||0)],
+   ['Unmatched paid orders',String(rec.unmatchedPaidOrderCount||0)],
+   ['Unmatched Stripe payments',String(rec.unmatchedStripePaymentCount||0)],
+   ['Paid order totals',fmtTotals(rec.paidOrderTotals)],
+   ['Completed payouts',String(rec.paidPayoutCount||0)+' · '+fmtTotals(rec.paidPayoutTotals)],
+   ['Pending / in-transit payouts',String(rec.pendingPayoutCount||0)+' · '+fmtTotals(rec.pendingPayoutTotals)],
+   ['Failed / canceled payouts',String(rec.failedPayoutCount||0)]
+  ];
+  const recBox=$('#stripe-reconciliation');
+  if(recBox)recBox.innerHTML='<div class="form-grid">'+recRows.map(x=>'<div class="metric"><span>'+esc(x[0])+'</span><strong>'+esc(x[1])+'</strong></div>').join('')+'</div><p class="muted">'+esc(rec.note||'Payouts are transfers, not new revenue.')+'</p>'+(rec.unmatchedPaidOrders?.length?'<p><strong>Paid orders needing a match:</strong></p>'+rec.unmatchedPaidOrders.map(o=>'<p>'+esc(o.productName)+' · '+esc(money(o.amount)+' '+o.currency)+' · '+esc(o.id)+'</p>').join(''):'');
   list.dataset.loaded='true';status.textContent='Updated '+new Date(data.fetchedAt).toLocaleString()+' · Stripe test mode';
  }catch(error){status.textContent=error.message;list.innerHTML='<div class="empty">'+esc(error.message)+'</div>'}
  finally{button.disabled=false}
