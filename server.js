@@ -47,6 +47,9 @@ app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async
         status: 'paid', updatedAt: now, createdAt: existing?.createdAt || now
       };
       if (existing) Object.assign(existing, order); else next.orders.unshift(order);
+      if (order.paymentStatus === 'paid' && !next.revenue.some(x => x.checkoutSessionId === session.id)) {
+        next.revenue.unshift({ id: crypto.randomUUID(), checkoutSessionId: session.id, type: 'Income', amount: order.amountTotal, source: 'Stripe sale: ' + (order.productName || 'Product') + ' (' + order.currency + ')', date: now.slice(0, 10), recordedAt: now });
+      }
       if (session.mode === 'subscription' && session.subscription) {
         const subId = typeof session.subscription === 'string' ? session.subscription : session.subscription.id;
         if (!next.subscriptions.some(x => x.stripeSubscriptionId === subId)) next.subscriptions.unshift({
@@ -200,6 +203,21 @@ function getStripeClient() {
   return new Stripe(process.env.STRIPE_SECRET_KEY);
 }
 app.get('/api/commerce/products', requireAuth, (req, res) => res.json({ products: state.products || [] }));
+app.get('/api/commerce/orders', requireAuth, (req, res) => res.json({ orders: state.orders || [], subscriptions: state.subscriptions || [] }));
+app.post('/api/commerce/orders/:orderId/fulfill', requireAuth, async (req, res) => {
+  try {
+    const next = structuredClone(state);
+    const order = next.orders.find(x => x.id === req.params.orderId || x.checkoutSessionId === req.params.orderId);
+    if (!order) return res.status(404).json({ error: 'Order not found.' });
+    if (order.paymentStatus !== 'paid') return res.status(409).json({ error: 'Only paid orders can be marked fulfilled.' });
+    order.fulfillmentStatus = 'fulfilled';
+    order.fulfilledAt = new Date().toISOString();
+    order.updatedAt = order.fulfilledAt;
+    next.activity.unshift({ message: 'Marked order fulfilled: ' + (order.productName || order.checkoutSessionId), at: order.fulfilledAt });
+    await saveState(next);
+    res.json({ order });
+  } catch (error) { console.error('Order fulfillment update failed:', error.message); res.status(500).json({ error: 'Could not update order.' }); }
+});
 app.post('/api/commerce/products', requireAuth, async (req, res) => {
   try {
     const body = req.body || {};
