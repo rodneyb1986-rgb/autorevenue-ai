@@ -7,7 +7,28 @@ async function api(url,opts={}){const r=await fetch(url,{...opts,headers:{...hea
 function showLogin(){$('#login-screen').classList.remove('hidden');$('#app').classList.add('hidden')}
 function showApp(){$('#login-screen').classList.add('hidden');$('#app').classList.remove('hidden')}
 function logoutLocal(){token='';sessionStorage.removeItem(KEY);showLogin()}
-async function loadState(){state=await api('/api/state');state.settings=state.settings||{};render();await checkSystem()}
+async function loadState(){state=await api('/api/state');state.settings=state.settings||{};render();await checkSystem();await verifyCheckoutReturn()}
+async function verifyCheckoutReturn(){
+ const url=new URL(window.location.href),checkout=url.searchParams.get('checkout');
+ if(!checkout)return;
+ const sessionId=url.searchParams.get('session_id');
+ url.searchParams.delete('checkout');url.searchParams.delete('session_id');
+ window.history.replaceState({},'',url.pathname+url.search+url.hash);
+ const out=$('#commerce-result');out.classList.remove('hidden');
+ if(checkout==='cancelled'){out.textContent='Checkout was cancelled. No payment was recorded.';return;}
+ if(checkout!=='success'){out.textContent='Unknown checkout return status.';return;}
+ if(!sessionId){out.textContent='Stripe returned success without a checkout session ID. No payment has been assumed.';return;}
+ out.textContent='Verifying payment directly with Stripe…';
+ try{
+  const result=await api('/api/commerce/checkout-session?session_id='+encodeURIComponent(sessionId));
+  if(result.verified){
+   state=await api('/api/state');state.settings=state.settings||{};render();
+   out.textContent='Payment verified by Stripe. '+(result.order?.productName||'Your order')+' · '+money(result.order?.amountTotal)+' '+(result.order?.currency||'USD')+'. The order and revenue ledger are up to date.';
+  }else{
+   out.textContent='Stripe has not marked this checkout as paid yet ('+(result.paymentStatus||'pending')+'). No revenue or access has been granted. Refresh this page in a moment or check the webhook delivery.';
+  }
+ }catch(error){out.textContent='Payment verification could not be completed: '+error.message+'. No payment is assumed from the success URL alone.';}
+}
 $('#login-form').addEventListener('submit',async e=>{e.preventDefault();$('#login-error').textContent='Signing in…';try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('#login-password').value})}),j=await r.json();if(!r.ok)throw Error(j.error||'Sign-in failed');token=j.token;sessionStorage.setItem(KEY,token);$('#login-password').value='';showApp();await loadState()}catch(err){$('#login-error').textContent=err.message}});
 async function save(){await api('/api/state',{method:'PUT',body:JSON.stringify(state)});render()}
 async function checkSystem(){try{const h=await fetch('/api/health').then(r=>r.json());$('#system-state').textContent=h.aiConfigured?'AI configured':'AI setup required';$('#system-state').className='status '+(h.aiConfigured?'ok':'warn');const items=[['Admin password',h.authConfigured],['OpenAI connection',h.aiConfigured],['PostgreSQL storage',h.storageReady&&h.persistentStorage],['Stripe test key',h.stripeTestConfigured],['Stripe webhook',h.stripeWebhookConfigured],['Automatic delivery email',h.emailDeliveryConfigured]];$('#config-status').innerHTML=items.map(x=>'<div class="config"><strong>'+esc(x[0])+'</strong><small class="'+(x[1]?'ok':'warn')+'">'+(x[1]?'Configured':'Needs setup')+'</small></div>').join('')}catch{$('#system-state').textContent='Server check failed'}}
