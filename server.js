@@ -357,6 +357,54 @@ async function getStripeTransactionSnapshot(stripe) {
 }
 app.get('/api/commerce/products', requireAuth, (req, res) => res.json({ products: state.products || [] }));
 app.get('/api/commerce/orders', requireAuth, (req, res) => res.json({ orders: state.orders || [], subscriptions: state.subscriptions || [] }));
+app.get('/api/commerce/checkout-session', requireAuth, limited('checkout-verify', 30, 60 * 60 * 1000), async (req, res) => {
+  try {
+    const sessionId = String(req.query.session_id || '').trim();
+    if (!/^cs_test_[A-Za-z0-9_]+$/.test(sessionId)) return res.status(400).json({ error: 'A valid Stripe test checkout session ID is required.' });
+    const stripe = getStripeClient();
+    const session = await stripe.checkout.sessions.retrieve(sessionId, { expand: ['subscription'] });
+    if (session.livemode) return res.status(403).json({ error: 'Live-mode checkout sessions are not accepted by this test service.' });
+    const paid = session.payment_status === 'paid' || session.payment_status === 'no_payment_required';
+    if (!paid) return res.json({ ok: true, verified: false, paymentStatus: session.payment_status || 'pending', order: null });
+    const next = structuredClone(state);
+    const now = new Date().toISOString();
+    const existing = next.orders.find(x => x.checkoutSessionId === session.id);
+    const productId = session.metadata?.productId || '';
+    const product = next.products.find(x => x.id === productId);
+    const order = {
+      id: existing?.id || session.id, checkoutSessionId: session.id,
+      paymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id || null,
+      customerId: typeof session.customer === 'string' ? session.customer : session.customer?.id || null,
+      customerEmail: session.customer_details?.email || session.customer_email || '',
+      productId, productName: session.metadata?.productName || product?.name || 'Stripe order',
+      mode: session.mode, amountTotal: Number(session.amount_total || 0) / 100,
+      currency: String(session.currency || 'usd').toUpperCase(),
+      paymentStatus: session.payment_status, fulfillmentStatus: existing?.fulfillmentStatus || 'pending',
+      deliveryToken: existing?.deliveryToken || (session.metadata?.productType === 'digital' ? crypto.randomBytes(32).toString('hex') : null),
+      status: 'paid', updatedAt: now, createdAt: existing?.createdAt || now
+    };
+    if (existing) Object.assign(existing, order); else next.orders.unshift(order);
+    if (!next.revenue.some(x => x.checkoutSessionId === session.id)) {
+      next.revenue.unshift({ id: crypto.randomUUID(), checkoutSessionId: session.id, type: 'Income', amount: order.amountTotal, source: 'Stripe sale: ' + order.productName + ' (' + order.currency + ')', date: now.slice(0, 10), recordedAt: now });
+    }
+    if (session.mode === 'subscription' && session.subscription) {
+      const sub = session.subscription;
+      const subId = typeof sub === 'string' ? sub : sub.id;
+      const subStatus = typeof sub === 'object' ? sub.status : 'active';
+      const prior = next.subscriptions.find(x => x.stripeSubscriptionId === subId);
+      const subRecord = { stripeSubscriptionId: subId, customerId: order.customerId, customerEmail: order.customerEmail, status: subStatus || 'active', productName: order.productName, createdAt: prior?.createdAt || now, updatedAt: now };
+      if (prior) Object.assign(prior, subRecord); else next.subscriptions.unshift(subRecord);
+    }
+    if (!existing) next.activity.unshift({ message: 'Stripe checkout verified and order recorded: ' + order.productName, at: now });
+    await saveState(next);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ok: true, verified: true, paymentStatus: order.paymentStatus, order });
+  } catch (error) {
+    console.error('Stripe checkout verification failed:', error.message);
+    res.status(502).json({ error: 'Could not verify this Stripe test checkout. Check the session ID, Stripe test key, and Render logs.' });
+  }
+});
+
 app.get('/api/stripe/transactions', requireAuth, limited('stripe-transactions', 6, 5 * 60 * 1000), async (req, res) => {
   try {
     const snapshot = await getStripeTransactionSnapshot(getStripeClient());
