@@ -575,7 +575,10 @@ app.post('/api/optimization/analyze', requireAuth, limited('optimization', 3, 60
   try {
     const now = Date.now();
     const cutoff = now - 30 * 24 * 60 * 60 * 1000;
-    const ledger = (state.revenue || []).filter(x => Number.isFinite(Number(x.amount)) && Number(x.amount) >= 0);
+    const allLedgerEntries = (state.revenue || []).filter(x => Number.isFinite(Number(x.amount)) && Number(x.amount) >= 0);
+    // Stripe webhook sales are represented in the Stripe balance feed; exclude them from the manual ledger totals to prevent double-counting.
+    const stripeLedgerEntriesExcluded = allLedgerEntries.filter(x => Boolean(x.checkoutSessionId) || /^Stripe sale:/i.test(String(x.source || ''))).length;
+    const ledger = allLedgerEntries.filter(x => !x.checkoutSessionId && !/^Stripe sale:/i.test(String(x.source || '')));
     const sum = (rows, type) => rows.filter(x => x.type === type).reduce((n, x) => n + Number(x.amount || 0), 0);
     const recentLedger = ledger.filter(x => {
       const date = Date.parse(String(x.date || '') + 'T00:00:00Z');
@@ -616,14 +619,15 @@ app.post('/api/optimization/analyze', requireAuth, limited('optimization', 3, 60
       availableBalance: stripeSnapshot.balance.available,
       pendingBalance: stripeSnapshot.balance.pending,
       transactionCount: stripeSnapshot.transactions.length,
-      grossCharges: Number(stripeSnapshot.transactions.filter(t => t.type === 'charge').reduce((n,t)=>n+t.amount,0).toFixed(2)),
+      grossCharges: Number(stripeSnapshot.transactions.filter(t => ['charge', 'payment'].includes(t.type) && t.amount > 0).reduce((n,t)=>n+t.amount,0).toFixed(2)),
+      stripeLedgerEntriesExcluded,
       refunds: Number(Math.abs(stripeSnapshot.transactions.filter(t => t.type === 'refund').reduce((n,t)=>n+t.amount,0)).toFixed(2)),
       fees: Number(stripeSnapshot.transactions.reduce((n,t)=>n+t.fee,0).toFixed(2)),
       netBalanceActivity: Number(stripeSnapshot.transactions.reduce((n,t)=>n+t.net,0).toFixed(2)),
       payouts: stripeSnapshot.payouts.slice(0, 50)
     };
     const OpenAI = require('openai'), client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 30000, maxRetries: 0 });
-    const system = 'You are the revenue optimization analyst for a small business. Return only valid JSON. Analyze only the supplied workspace data. Never invent performance, market demand, conversion rates, revenue, costs, customer counts, or causes. Clearly distinguish observed facts from hypotheses. Campaign-attributed revenue is not necessarily collected cash; do not add it to the ledger. Do not recommend ad spend, purchases, subscriptions, or paid services without explicitly marking them as requiring owner approval. Prioritize low-cost, measurable actions. If data is sparse, say so and recommend what to measure before drawing conclusions.';
+    const system = 'You are the revenue optimization analyst for a small business. Return only valid JSON. Analyze only the supplied workspace data. Never invent performance, market demand, conversion rates, revenue, costs, customer counts, or causes. Clearly distinguish observed facts from hypotheses. Campaign-attributed revenue is not necessarily collected cash; do not add it to the ledger. Stripe webhook-generated ledger entries are excluded from manual ledger totals to prevent double-counting; analyze Stripe totals separately. Do not recommend ad spend, purchases, subscriptions, or paid services without explicitly marking them as requiring owner approval. Prioritize low-cost, measurable actions. If data is sparse, say so and recommend what to measure before drawing conclusions.';
     const prompt = 'Analyze this AutoRevenue AI workspace snapshot and return JSON exactly shaped as {"executiveSummary":"...","dataGaps":["..."],"recommendations":[{"priority":"High|Medium|Low","action":"specific action","reason":"evidence from supplied data or clearly labeled hypothesis","metric":"what to measure","effort":"Low|Medium|High","confidence":"High|Medium|Low","requiresApproval":false}]}. Give 3 to 5 ranked recommendations. Include at least one measurement/data-quality action when evidence is limited. Do not suggest that any action has already been taken. Snapshot: ' + JSON.stringify(snapshot);
     const completion = await client.chat.completions.create({
       model: process.env.OPENAI_MODEL,
