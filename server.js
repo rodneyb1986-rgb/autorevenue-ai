@@ -134,6 +134,8 @@ async function initStorage() {
     pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false }, max: 5, connectionTimeoutMillis: 10000 });
     await pool.query('CREATE TABLE IF NOT EXISTS autorevenue_ai_state (id integer PRIMARY KEY CHECK (id = 1), payload jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())');
     await pool.query('CREATE TABLE IF NOT EXISTS autorevenue_ai_sessions (token_hash text PRIMARY KEY, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now())');
+    await pool.query('CREATE TABLE IF NOT EXISTS autorevenue_ai_rate_limits (bucket_key text PRIMARY KEY, hit_count integer NOT NULL, reset_at timestamptz NOT NULL)');
+    await pool.query('CREATE TABLE IF NOT EXISTS autorevenue_ai_backups (id bigserial PRIMARY KEY, payload jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now())');
     const result = await pool.query('SELECT payload FROM autorevenue_ai_state WHERE id = 1');
     if (result.rows[0]) state = cleanState(result.rows[0].payload);
     else {
@@ -157,6 +159,13 @@ function saveState(next) {
   const normalized = cleanState(next);
   const write = async () => {
     if (pool) {
+      const prior = await pool.query('SELECT updated_at FROM autorevenue_ai_state WHERE id = 1');
+      const lastBackup = prior.rows[0]?.updated_at ? new Date(prior.rows[0].updated_at).getTime() : 0;
+      if (prior.rows[0] && Date.now() - lastBackup >= 24 * 60 * 60 * 1000) {
+        const snapshot = await pool.query('SELECT payload FROM autorevenue_ai_state WHERE id = 1');
+        if (snapshot.rows[0]) await pool.query('INSERT INTO autorevenue_ai_backups (payload) VALUES ($1)', [snapshot.rows[0].payload]);
+        await pool.query('DELETE FROM autorevenue_ai_backups WHERE id NOT IN (SELECT id FROM autorevenue_ai_backups ORDER BY created_at DESC LIMIT 14)');
+      }
       await pool.query('INSERT INTO autorevenue_ai_state (id, payload, updated_at) VALUES (1, $1, now()) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()', [normalized]);
     } else {
       fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
@@ -192,15 +201,25 @@ async function recordAIUsage(completion, purpose) {
 }
 function clientIp(req) { return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown'; }
 function limited(bucket, max, windowMs) {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     const key = bucket + ':' + clientIp(req), now = Date.now();
-    requestCount++;
-    if (requestCount % 100 === 0) for (const [k, v] of attempts) if (v.reset < now) attempts.delete(k);
-    const entry = attempts.get(key) || { count: 0, reset: now + windowMs };
-    if (now > entry.reset) { entry.count = 0; entry.reset = now + windowMs; }
-    entry.count++; attempts.set(key, entry);
-    if (entry.count > max) return res.status(429).json({ error: 'Too many requests. Try again shortly.' });
-    next();
+    try {
+      if (pool) {
+        const result = await pool.query(
+          "INSERT INTO autorevenue_ai_rate_limits (bucket_key, hit_count, reset_at) VALUES ($1, 1, now() + ($2 * interval '1 millisecond')) ON CONFLICT (bucket_key) DO UPDATE SET hit_count = CASE WHEN autorevenue_ai_rate_limits.reset_at <= now() THEN 1 ELSE autorevenue_ai_rate_limits.hit_count + 1 END, reset_at = CASE WHEN autorevenue_ai_rate_limits.reset_at <= now() THEN now() + ($2 * interval '1 millisecond') ELSE autorevenue_ai_rate_limits.reset_at END RETURNING hit_count",
+          [key, windowMs]
+        );
+        if (Number(result.rows[0]?.hit_count || 0) > max) return res.status(429).json({ error: 'Too many requests. Try again shortly.' });
+      } else {
+        requestCount++;
+        if (requestCount % 100 === 0) for (const [k, v] of attempts) if (v.reset < now) attempts.delete(k);
+        const entry = attempts.get(key) || { count: 0, reset: now + windowMs };
+        if (now > entry.reset) { entry.count = 0; entry.reset = now + windowMs; }
+        entry.count++; attempts.set(key, entry);
+        if (entry.count > max) return res.status(429).json({ error: 'Too many requests. Try again shortly.' });
+      }
+      next();
+    } catch (error) { console.error('Rate limit storage failed:', error.message); res.status(503).json({ error: 'Request protection is temporarily unavailable.' }); }
   };
 }
 async function createSession() {
