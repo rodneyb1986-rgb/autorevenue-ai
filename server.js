@@ -15,7 +15,7 @@ const attempts = new Map();
 let requestCount = 0;
 let storageReady = false;
 const DEFAULT_STATE = {
-  opportunities: [], campaigns: [], content: [], revenue: [], approvals: [], automationRuns: [], aiUsage: [], optimizationReports: [], golfOpportunities: [], products: [], orders: [], subscriptions: [],
+  opportunities: [], campaigns: [], content: [], revenue: [], approvals: [], automationRuns: [], aiUsage: [], optimizationReports: [], golfOpportunities: [], products: [], orders: [], subscriptions: [], leads: [],
   settings: { niche: '', monthlyGoal: 500, autonomy: 'approval', strategies: ['affiliate', 'digital-products', 'lead-generation', 'content'] },
   activity: []
 };
@@ -91,7 +91,7 @@ app.use(express.static(PUBLIC, { index: false }));
 
 let pool = null;
 let state = structuredClone(DEFAULT_STATE);
-const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'aiUsage', 'optimizationReports', 'golfOpportunities', 'products', 'orders', 'subscriptions', 'activity'];
+const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'aiUsage', 'optimizationReports', 'golfOpportunities', 'products', 'orders', 'subscriptions', 'leads', 'activity'];
 const ALLOWED_STRATEGIES = ['affiliate', 'digital-products', 'lead-generation', 'content', 'services'];
 function sanitizeJson(value, depth = 0) {
   if (value === null || typeof value === 'boolean') return value;
@@ -525,6 +525,46 @@ app.get('/api/state/export', requireAuth, (req, res) => {
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="autorevenue-ai-backup-' + stamp + '.json"');
   res.send(JSON.stringify(state, null, 2));
+});
+// Public lead intake: explicit consent, honeypot and rate limit. Leads are never shared automatically.
+app.post('/api/public/leads', limited('public-lead', 4, 60 * 60 * 1000), async (req, res) => {
+  try {
+    const body = req.body || {};
+    if (String(body.website || '').trim()) return res.status(200).json({ ok: true, message: 'Request received.' });
+    const name = String(body.name || '').trim().slice(0, 120);
+    const email = String(body.email || '').trim().toLowerCase().slice(0, 254);
+    const phone = String(body.phone || '').trim().slice(0, 40);
+    const zip = String(body.zip || '').trim().slice(0, 10);
+    const equipment = String(body.equipment || '').trim().slice(0, 100);
+    const model = String(body.model || '').trim().slice(0, 120);
+    const attachment = String(body.attachment || '').trim().slice(0, 160);
+    const timeline = String(body.timeline || '').trim().slice(0, 80);
+    const details = String(body.details || '').trim().slice(0, 1500);
+    if (name.length < 2 || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email) || !/^\\d{5}(-\\d{4})?$/.test(zip)) return res.status(400).json({ error: 'Enter your name, a valid email address and a 5-digit ZIP code.' });
+    if (!attachment || !timeline || !['Immediately','Within 30 days','1–3 months','Just researching'].includes(timeline)) return res.status(400).json({ error: 'Choose an attachment and purchase timeline.' });
+    if (body.consent !== true) return res.status(400).json({ error: 'Consent is required so we can respond to your request.' });
+    const score = (phone ? 15 : 0) + (equipment ? 20 : 0) + (model ? 15 : 0) + (timeline === 'Immediately' ? 35 : timeline === 'Within 30 days' ? 25 : timeline === '1–3 months' ? 15 : 5) + (attachment ? 15 : 0);
+    const lead = { id: crypto.randomUUID(), name, email, phone, zip, equipment, model, attachment, timeline, details, consent: true, consentText: 'Agreed to be contacted about this request and to have details shared with a matched equipment supplier if one is found.', score, status: score >= 70 ? 'Qualified' : 'New', source: 'Skid steer attachment finder', createdAt: new Date().toISOString() };
+    const next = structuredClone(state);
+    next.leads = Array.isArray(next.leads) ? next.leads : [];
+    next.leads.unshift(lead);
+    next.leads = next.leads.slice(0, 500);
+    next.activity.unshift({ message: 'New equipment buyer lead received (' + lead.status + ')', at: lead.createdAt });
+    await saveState(next);
+    res.status(201).json({ ok: true, message: 'Your request has been received. We will review your equipment details.' });
+  } catch (error) { console.error('Public lead intake failed:', error.message); res.status(500).json({ error: 'We could not save your request. Please try again.' }); }
+});
+app.get('/api/leads', requireAuth, (req, res) => res.json({ leads: state.leads || [] }));
+app.patch('/api/leads/:id', requireAuth, async (req, res) => {
+  const allowed = ['New','Qualified','Contacted','Converted','Closed'];
+  const status = String(req.body?.status || '');
+  if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid lead status.' });
+  const next = structuredClone(state);
+  const lead = (next.leads || []).find(x => x.id === req.params.id);
+  if (!lead) return res.status(404).json({ error: 'Lead not found.' });
+  lead.status = status; lead.updatedAt = new Date().toISOString();
+  await saveState(next);
+  res.json({ ok: true, lead });
 });
 app.get('/api/state', requireAuth, (req, res) => res.json(state));
 app.put('/api/state', requireAuth, limited('state-write', 120, 60 * 1000), async (req, res) => {
