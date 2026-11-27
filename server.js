@@ -349,6 +349,34 @@ app.put('/api/state', requireAuth, limited('state-write', 120, 60 * 1000), async
     await saveState(req.body); res.json({ ok: true, updatedAt: new Date().toISOString() });
   } catch (error) { console.error('State save failed:', error.message); res.status(500).json({ error: 'Could not save workspace data.' }); }
 });
+app.post('/api/ai/test', requireAuth, limited('ai-test', 3, 10 * 60 * 1000), async (req, res) => {
+  if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) {
+    return res.status(503).json({ ok: false, error: 'AI configuration is incomplete. Check OPENAI_API_KEY and OPENAI_MODEL in Render.' });
+  }
+  try {
+    const OpenAI = require('openai');
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 20000, maxRetries: 0 });
+    const completion = await client.chat.completions.create({
+      model: process.env.OPENAI_MODEL,
+      messages: [{ role: 'user', content: 'Reply with exactly: AutoRevenue AI connection successful.' }],
+      max_completion_tokens: 40
+    });
+    const result = completion.choices?.[0]?.message?.content?.trim() || '';
+    if (!result) throw new Error('The model returned an empty response.');
+    res.json({ ok: true, model: process.env.OPENAI_MODEL, message: 'OpenAI API request succeeded.' });
+  } catch (error) {
+    const status = Number(error.status || error.statusCode || 0);
+    console.error('AI connection test failed:', status, error.message);
+    const message = status === 401 ? 'OpenAI rejected the API key. Check the key in Render.'
+      : status === 403 ? 'OpenAI denied access to this model or project. Check project permissions.'
+      : status === 404 ? 'The configured model was not found or is not available to this API project.'
+      : status === 429 ? 'OpenAI rate limit or billing limit reached. Check API usage and billing.'
+      : status >= 500 ? 'OpenAI is temporarily unavailable. Try again shortly.'
+      : 'AI connection failed. Check the configured model and Render logs.';
+    res.status(502).json({ ok: false, error: message });
+  }
+});
+
 app.post('/api/generate', requireAuth, limited('generate', 30, 60 * 60 * 1000), async (req, res) => {
   const { type = 'content', prompt = '', niche = '' } = req.body || {};
   if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'AI is not configured. Add OPENAI_API_KEY in Render environment variables.' });
