@@ -439,22 +439,20 @@ app.post('/api/automation/run', requireAuth, limited('automation', 5, 60 * 60 * 
     if (required.some(key => typeof plan[key] !== 'string' || !plan[key].trim())) throw new Error('The planning engine returned incomplete JSON.');
     const now = new Date().toISOString(), id = Date.now();
     const opportunity = { id, title: plan.opportunityTitle, body: plan.opportunityDescription + '\\n\\nValidation steps:\\n' + (Array.isArray(plan.validationSteps) ? plan.validationSteps.map((x, i) => (i + 1) + '. ' + x).join('\\n') : ''), status: 'Needs validation', created: now };
-    const campaign = { id: id + 1, name: plan.campaignName, channel: plan.campaignChannel || 'Website / blog', goal: plan.campaignGoal || 'Validate demand', duration: plan.campaignDuration || '14 days', plan: plan.campaignPlan, status: 'Draft · approval required', created: now };
-    const content = { id: id + 2, title: plan.contentTitle, type: plan.contentType || 'Marketing draft', body: plan.contentDraft, status: 'Draft · approval required', created: now };
+    const campaign = { id: id + 1, name: plan.campaignName, channel: plan.campaignChannel || 'Website / blog', goal: plan.campaignGoal || 'Validate demand', duration: plan.campaignDuration || '14 days', plan: plan.campaignPlan, status: 'Draft · not published', created: now };
+    const content = { id: id + 2, title: plan.contentTitle, type: plan.contentType || 'Marketing draft', body: plan.contentDraft, status: 'Draft · not published', created: now };
     const next = structuredClone(state);
     next.opportunities.unshift(opportunity);
     next.campaigns.unshift(campaign);
     next.content.unshift(content);
-    next.approvals.unshift(
-      { id: id + 3, title: 'Review campaign: ' + campaign.name, details: campaign.plan, status: 'Pending', created: now },
-      { id: id + 4, title: 'Review content: ' + content.title, details: content.body, status: 'Pending', created: now }
-    );
+    // Creating internal drafts is non-billable and does not publish or contact anyone.
+    // Reserve the approval queue for external actions that require explicit authorization.
     next.automationRuns = Array.isArray(next.automationRuns) ? next.automationRuns : [];
     next.automationRuns.unshift({ id, niche, status: 'Completed · drafts created', nextStep: plan.nextStep, created: now });
     next.automationRuns = next.automationRuns.slice(0, 50);
     next.activity = [{ message: 'Automation run created an opportunity, campaign and content draft for review', at: now }, ...(next.activity || [])].slice(0, 40);
     await saveState(next);
-    res.json({ ok: true, created: { opportunity: opportunity.title, campaign: campaign.name, content: content.title }, approvalsRequired: 2, nextStep: plan.nextStep });
+    res.json({ ok: true, created: { opportunity: opportunity.title, campaign: campaign.name, content: content.title }, approvalsRequired: 0, nextStep: plan.nextStep });
   } catch (error) {
     console.error('Automation run failed:', error.message);
     res.status(502).json({ error: 'Automation could not complete this run. Check Render logs and try again.' });
