@@ -127,7 +127,7 @@ $('#refresh-stripe-transactions').addEventListener('click',async()=>{
  button.disabled=true;status.textContent='Loading read-only Stripe test data…';list.innerHTML='<div class="empty">Fetching payments, refunds, fees and payouts…</div>';
  try{
   const data=await api('/api/stripe/transactions');
-  const totals=data.transactions.reduce((a,t)=>{if(t.type==='charge')a.gross+=t.amount;if(t.type==='refund')a.refunds+=Math.abs(t.amount);a.fees+=t.fee;a.net+=t.net;return a;},{gross:0,refunds:0,fees:0,net:0});
+  const totals=data.transactions.reduce((a,t)=>{if(['charge','payment'].includes(t.type)&&t.amount>0)a.gross+=t.amount;if(t.type==='refund')a.refunds+=Math.abs(t.amount);a.fees+=t.fee;a.net+=t.net;return a;},{gross:0,refunds:0,fees:0,net:0});
   const cards=[
    ['Available balance',(data.balance.available||[]).map(x=>money(x.amount)+' '+x.currency).join(' · ')||'—'],
    ['Pending balance',(data.balance.pending||[]).map(x=>money(x.amount)+' '+x.currency).join(' · ')||'—'],
