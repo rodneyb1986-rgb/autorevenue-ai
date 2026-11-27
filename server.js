@@ -15,7 +15,7 @@ const attempts = new Map();
 let requestCount = 0;
 let storageReady = false;
 const DEFAULT_STATE = {
-  opportunities: [], campaigns: [], content: [], revenue: [], approvals: [], automationRuns: [], aiUsage: [], golfOpportunities: [], products: [], orders: [], subscriptions: [],
+  opportunities: [], campaigns: [], content: [], revenue: [], approvals: [], automationRuns: [], aiUsage: [], optimizationReports: [], golfOpportunities: [], products: [], orders: [], subscriptions: [],
   settings: { niche: '', monthlyGoal: 500, autonomy: 'approval', strategies: ['affiliate', 'digital-products', 'lead-generation', 'content'] },
   activity: []
 };
@@ -91,7 +91,7 @@ app.use(express.static(PUBLIC, { index: false }));
 
 let pool = null;
 let state = structuredClone(DEFAULT_STATE);
-const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'aiUsage', 'golfOpportunities', 'products', 'orders', 'subscriptions', 'activity'];
+const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'aiUsage', 'optimizationReports', 'golfOpportunities', 'products', 'orders', 'subscriptions', 'activity'];
 const ALLOWED_STRATEGIES = ['affiliate', 'digital-products', 'lead-generation', 'content', 'services'];
 function sanitizeJson(value, depth = 0) {
   if (value === null || typeof value === 'boolean') return value;
@@ -507,6 +507,86 @@ app.post('/api/automation/run', requireAuth, limited('automation', 5, 60 * 60 * 
   } catch (error) {
     console.error('Automation run failed:', error.message);
     res.status(502).json({ error: 'Automation could not complete this run. Check Render logs and try again.' });
+  }
+});
+
+
+app.post('/api/optimization/analyze', requireAuth, limited('optimization', 3, 60 * 60 * 1000), async (req, res) => {
+  if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) {
+    return res.status(503).json({ error: 'AI is not configured. Check OPENAI_API_KEY and OPENAI_MODEL in Render.' });
+  }
+  try {
+    const now = Date.now();
+    const cutoff = now - 30 * 24 * 60 * 60 * 1000;
+    const ledger = (state.revenue || []).filter(x => Number.isFinite(Number(x.amount)) && Number(x.amount) >= 0);
+    const sum = (rows, type) => rows.filter(x => x.type === type).reduce((n, x) => n + Number(x.amount || 0), 0);
+    const recentLedger = ledger.filter(x => {
+      const date = Date.parse(String(x.date || '') + 'T00:00:00Z');
+      return Number.isFinite(date) && date >= cutoff;
+    });
+    const campaigns = (state.campaigns || []).slice(0, 30).map(c => {
+      const metrics = Array.isArray(c.metrics) ? c.metrics : [];
+      const totals = key => metrics.reduce((n, m) => n + Math.max(0, Number(m[key]) || 0), 0);
+      const impressions = totals('impressions'), clicks = totals('clicks'), leads = totals('leads');
+      const conversions = totals('conversions'), spend = totals('spend'), revenue = totals('revenue');
+      return {
+        name: String(c.name || '').slice(0, 120), channel: String(c.channel || '').slice(0, 80),
+        snapshots: metrics.length, impressions, clicks, leads, conversions, spend, attributedRevenue: revenue,
+        attributedNet: revenue - spend,
+        ctrPercent: impressions ? Number((clicks / impressions * 100).toFixed(2)) : null,
+        conversionPercent: clicks ? Number((conversions / clicks * 100).toFixed(2)) : null
+      };
+    });
+    const snapshot = {
+      niche: String(state.settings?.niche || '').slice(0, 160),
+      monthlyGoal: Number(state.settings?.monthlyGoal || 0),
+      allTimeLedger: { income: sum(ledger, 'Income'), expenses: sum(ledger, 'Expense'), net: sum(ledger, 'Income') - sum(ledger, 'Expense'), entries: ledger.length },
+      last30DaysLedger: { income: sum(recentLedger, 'Income'), expenses: sum(recentLedger, 'Expense'), net: sum(recentLedger, 'Income') - sum(recentLedger, 'Expense'), entries: recentLedger.length },
+      campaignPerformance: campaigns,
+      opportunities: (state.opportunities || []).slice(0, 12).map(o => ({
+        title: String(o.title || '').slice(0, 140), score: Number(o.score) || null,
+        status: String(o.status || '').slice(0, 60), validationDays: Number(o.validationDays) || null
+      })),
+      contentAssets: (state.content || []).length,
+      automationRuns: (state.automationRuns || []).length,
+      products: (state.products || []).filter(p => p.active).length,
+      paidOrders: (state.orders || []).filter(o => o.paymentStatus === 'paid').length
+    };
+    const OpenAI = require('openai'), client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 30000, maxRetries: 0 });
+    const system = 'You are the revenue optimization analyst for a small business. Return only valid JSON. Analyze only the supplied workspace data. Never invent performance, market demand, conversion rates, revenue, costs, customer counts, or causes. Clearly distinguish observed facts from hypotheses. Campaign-attributed revenue is not necessarily collected cash; do not add it to the ledger. Do not recommend ad spend, purchases, subscriptions, or paid services without explicitly marking them as requiring owner approval. Prioritize low-cost, measurable actions. If data is sparse, say so and recommend what to measure before drawing conclusions.';
+    const prompt = 'Analyze this AutoRevenue AI workspace snapshot and return JSON exactly shaped as {"executiveSummary":"...","dataGaps":["..."],"recommendations":[{"priority":"High|Medium|Low","action":"specific action","reason":"evidence from supplied data or clearly labeled hypothesis","metric":"what to measure","effort":"Low|Medium|High","confidence":"High|Medium|Low","requiresApproval":false}]}. Give 3 to 5 ranked recommendations. Include at least one measurement/data-quality action when evidence is limited. Do not suggest that any action has already been taken. Snapshot: ' + JSON.stringify(snapshot);
+    const completion = await client.chat.completions.create({
+      model: process.env.OPENAI_MODEL,
+      messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }],
+      max_completion_tokens: 2200
+    });
+    let raw = (completion.choices?.[0]?.message?.content || '').trim().replace(/^`{3}(?:json)?s*/i, '').replace(/s*`{3}$/, '');
+    const report = JSON.parse(raw);
+    if (typeof report.executiveSummary !== 'string' || !Array.isArray(report.recommendations)) throw new Error('The optimization engine returned an invalid report.');
+    report.executiveSummary = report.executiveSummary.slice(0, 1600);
+    report.dataGaps = Array.isArray(report.dataGaps) ? report.dataGaps.slice(0, 8).map(x => String(x).slice(0, 400)) : [];
+    report.recommendations = report.recommendations.slice(0, 5).map(r => ({
+      priority: ['High', 'Medium', 'Low'].includes(r.priority) ? r.priority : 'Medium',
+      action: String(r.action || '').slice(0, 500),
+      reason: String(r.reason || '').slice(0, 700),
+      metric: String(r.metric || '').slice(0, 300),
+      effort: ['Low', 'Medium', 'High'].includes(r.effort) ? r.effort : 'Medium',
+      confidence: ['High', 'Medium', 'Low'].includes(r.confidence) ? r.confidence : 'Low',
+      requiresApproval: Boolean(r.requiresApproval)
+    })).filter(r => r.action && r.reason);
+    if (!report.recommendations.length) throw new Error('The optimization engine returned no usable recommendations.');
+    const saved = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), summary: report.executiveSummary, recommendations: report.recommendations, dataGaps: report.dataGaps };
+    const next = structuredClone(state);
+    next.optimizationReports = Array.isArray(next.optimizationReports) ? next.optimizationReports : [];
+    next.optimizationReports.unshift(saved);
+    next.optimizationReports = next.optimizationReports.slice(0, 25);
+    next.activity = [{ message: 'Generated a revenue optimization report', at: saved.createdAt }, ...(next.activity || [])].slice(0, 40);
+    await saveState(next);
+    await recordAIUsage(completion, 'Revenue optimization');
+    res.json({ ok: true, report: saved, snapshotSummary: { ledgerEntries: ledger.length, campaignCount: campaigns.length, opportunityCount: (state.opportunities || []).length } });
+  } catch (error) {
+    console.error('Revenue optimization failed:', error.message);
+    res.status(502).json({ error: 'Revenue optimization failed. Check Render logs and try again.' });
   }
 });
 
