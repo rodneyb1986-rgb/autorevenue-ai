@@ -35,8 +35,10 @@ function render(){
   const details=(order.customerEmail||'No customer email')+' · '+money(order.amountTotal)+' '+esc(order.currency||'USD')+' · '+(order.mode==='subscription'?'Subscription':'One-time');
   const status=(order.paymentStatus||'unknown')+' · Fulfillment: '+(order.fulfillmentStatus||'pending');
   const action=order.paymentStatus==='paid'&&order.fulfillmentStatus!=='fulfilled'?[['Mark fulfilled','commerce-fulfill:'+order.id]]:[];
-  const delivery=order.deliveryToken?' · Download: '+location.origin+'/download/'+order.deliveryToken:'';
-  return record(order.productName||'Stripe order',details+delivery,status,action);
+  const delivery=order.deliveryToken
+   ? '<div class="download-row"><a class="btn secondary" href="/download/'+encodeURIComponent(order.deliveryToken)+'" target="_blank" rel="noopener">Download digital product</a><button class="mini" type="button" data-copy-download="'+esc(location.origin+'/download/'+order.deliveryToken)+'">Copy download link</button></div>'
+   : '';
+  return '<div class="record"><div><strong>'+esc(order.productName||'Stripe order')+'</strong><p>'+details+'</p><small>'+esc(status)+'</small>'+delivery+'</div><div class="record-actions">'+action.map(a=>'<button class="mini" data-action="'+esc(a[1])+'">'+esc(a[0])+'</button>').join('')+'</div></div>';
  }).join('')||'<div class="empty">No Stripe orders received yet. Completed payments will appear here after the webhook is delivered.</div>';
  $('#approval-list').innerHTML=state.approvals.map((x,i)=>record(x.title,x.details||'',x.status,x.status==='Pending'?[['Approve','approve:'+i],['Reject','reject:'+i]]:[])).join('')||'<div class="empty">No approvals waiting.</div>';
  $('#setting-niche').value=state.settings.niche||'';$('#setting-goal').value=state.settings.monthlyGoal??500;$('#setting-autonomy').value=state.settings.autonomy||'approval';$$('.strategy').forEach(c=>c.checked=(state.settings.strategies||[]).includes(c.value));
@@ -148,4 +150,12 @@ $('#export-backup').addEventListener('click', async () => {
   status.textContent = 'Backup downloaded. Store it somewhere private; it contains your workspace records.';
  } catch (error) { status.textContent = error.message; }
  finally { button.disabled = false; }
+});
+
+document.addEventListener('click',async e=>{
+ const button=e.target.closest('[data-copy-download]');
+ if(!button)return;
+ const url=button.getAttribute('data-copy-download');
+ try{await navigator.clipboard.writeText(url);button.textContent='Copied';}
+ catch{window.prompt('Copy this download link:',url);}
 });
