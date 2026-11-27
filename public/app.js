@@ -126,9 +126,10 @@ $('#run-optimization').addEventListener('click',async()=>{
  button.disabled=true;out.classList.remove('hidden');out.textContent='Analyzing actual ledger entries, campaign performance and saved opportunities…';
  try{
   const result=await api('/api/optimization/analyze',{method:'POST',body:JSON.stringify({})}),report=result.report;
-  const lines=[report.summary,'','RECOMMENDATIONS',...report.recommendations.map((r,i)=>(i+1)+'. ['+r.priority+'] '+r.action+'\\n   Why: '+r.reason+'\\n   Measure: '+r.metric+'\\n   Effort: '+r.effort+' · Confidence: '+r.confidence+(r.requiresApproval?' · Owner approval required':''))];
-  if(report.dataGaps?.length)lines.push('','DATA GAPS',...report.dataGaps.map(x=>'• '+x));
-  out.textContent=lines.join('\\n');
+  const clean = value => String(value ?? '').replace(/&#91;/g,'[').replace(/&#93;/g,']').replace(/&amp;/g,'&');
+  const lines=[clean(report.summary),'','RECOMMENDATIONS',...report.recommendations.map((r,i)=>(i+1)+'. ['+clean(r.priority)+'] '+clean(r.action)+'\n   Why: '+clean(r.reason)+'\n   Measure: '+clean(r.metric)+'\n   Effort: '+clean(r.effort)+' · Confidence: '+clean(r.confidence)+(r.requiresApproval?' · Owner approval required':''))];
+  if(report.dataGaps?.length)lines.push('','DATA GAPS',...report.dataGaps.map(x=>'• '+clean(x)));
+  out.textContent=lines.join('\n');
   await loadState();
  }catch(error){out.textContent=error.message}
  finally{button.disabled=false;button.textContent='Analyze revenue and recommend next steps'}
