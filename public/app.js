@@ -55,7 +55,7 @@ async function runAutomation(){
  button.disabled=true;button.textContent='Building plan…';output.classList.remove('hidden');output.textContent='AI is preparing an opportunity, campaign and content draft…';
  try{
   const r=await api('/api/automation/run',{method:'POST',body:JSON.stringify({niche:state.settings.niche,strategies:state.settings.strategies})});
-  output.textContent='Created: '+r.created.opportunity+' · '+r.created.campaign+' · '+r.created.content+'\\n'+r.approvalsRequired+' items are waiting for your approval. Next step: '+r.nextStep;
+  output.textContent='Created: '+r.created.opportunity+' · '+r.created.campaign+' · '+r.created.content+'\\nNo external actions were taken. Drafts are saved for the next step: '+r.nextStep;
   await loadState();
  }catch(e){output.textContent=e.message}
  finally{button.disabled=false;button.textContent='Run automation cycle'}
