@@ -54,6 +54,8 @@ function render(){
   return '<div class="record"><div><strong>'+esc(order.productName||'Stripe order')+'</strong><p>'+details+'</p><small>'+esc(status)+'</small>'+delivery+'</div><div class="record-actions">'+action.map(a=>'<button class="mini" data-action="'+esc(a[1])+'">'+esc(a[0])+'</button>').join('')+'</div></div>';
  }).join('')||'<div class="empty">No Stripe orders received yet. Completed payments will appear here after the webhook is delivered.</div>';
  $('#approval-list').innerHTML=state.approvals.map((x,i)=>record(x.title,x.details||'',x.status,x.status==='Pending'?[['Approve','approve:'+i],['Reject','reject:'+i]]:[])).join('')||'<div class="empty">No approvals waiting.</div>';
+ const aiRows=Array.isArray(state.aiUsage)?state.aiUsage:[],today=new Date().toISOString().slice(0,10),month=today.slice(0,7),todayRows=aiRows.filter(x=>String(x.createdAt||'').startsWith(today)),monthRows=aiRows.filter(x=>String(x.createdAt||'').startsWith(month)),tokens=rows=>rows.reduce((n,x)=>n+Number(x.totalTokens||0),0);
+ const usageBox=$('#ai-usage-summary');if(usageBox)usageBox.textContent='Today: '+todayRows.length+' requests · '+tokens(todayRows).toLocaleString()+' tokens | This month: '+monthRows.length+' requests · '+tokens(monthRows).toLocaleString()+' tokens. Token totals are reported by the API; dollar cost is not estimated here.';
  $('#setting-niche').value=state.settings.niche||'';$('#setting-goal').value=state.settings.monthlyGoal??500;$('#setting-autonomy').value=state.settings.autonomy||'approval';$$('.strategy').forEach(c=>c.checked=(state.settings.strategies||[]).includes(c.value));
  $$('[data-action]').forEach(b=>b.onclick=()=>handleAction(b.dataset.action));
 }
