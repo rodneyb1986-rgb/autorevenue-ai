@@ -230,7 +230,7 @@ async function createSession() {
   return token;
 }
 async function requireAuth(req, res, next) {
-  const token = (req.headers.authorization || '').replace(/^Bearer\\s+/i, '');
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   if (!token) return res.status(401).json({ error: 'Please sign in again.' });
   try {
     const hash = crypto.createHash('sha256').update(token).digest('hex');
@@ -578,7 +578,7 @@ app.post('/api/public/leads', limited('public-lead', 4, 60 * 60 * 1000), async (
     const utmMedium = String(body.utmMedium || '').trim().slice(0, 100);
     const utmCampaign = String(body.utmCampaign || '').trim().slice(0, 120);
 
-    if (name.length < 2 || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email) || !/^\\d{5}(-\\d{4})?$/.test(zip)) return res.status(400).json({ error: 'Enter your name, a valid email address and a 5-digit ZIP code.' });
+    if (name.length < 2 || !/^[^\s@]+@[^\s@]+\\.[^\s@]+$/.test(email) || !/^\d{5}(-\d{4})?$/.test(zip)) return res.status(400).json({ error: 'Enter your name, a valid email address and a 5-digit ZIP code.' });
     if (!attachment || !timeline || !['Immediately','Within 30 days','1–3 months','Just researching'].includes(timeline)) return res.status(400).json({ error: 'Choose an attachment and purchase timeline.' });
     if (body.consent !== true) return res.status(400).json({ error: 'Consent is required so we can respond to your request.' });
     const score = (phone ? 15 : 0) + (equipment ? 20 : 0) + (model ? 15 : 0) + (timeline === 'Immediately' ? 35 : timeline === 'Within 30 days' ? 25 : timeline === '1–3 months' ? 15 : 5) + (attachment ? 15 : 0);
@@ -598,7 +598,7 @@ app.patch('/api/leads/:id', requireAuth, async (req, res) => {
   const next = structuredClone(state), lead = (next.leads || []).find(x => x.id === req.params.id);
   if (!lead) return res.status(404).json({ error: 'Lead not found.' });
   if (req.body?.status !== undefined) { const status = String(req.body.status); if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid lead status.' }); lead.status = status; }
-  if (req.body?.followUpAt !== undefined) { const value = String(req.body.followUpAt || ''); if (value && !/^\\d{4}-\\d{2}-\\d{2}$/.test(value)) return res.status(400).json({ error: 'Follow-up date must be YYYY-MM-DD.' }); lead.followUpAt = value; }
+  if (req.body?.followUpAt !== undefined) { const value = String(req.body.followUpAt || ''); if (value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) return res.status(400).json({ error: 'Follow-up date must be YYYY-MM-DD.' }); lead.followUpAt = value; }
   if (req.body?.followUpNote !== undefined) lead.followUpNote = String(req.body.followUpNote || '').trim().slice(0, 500);
   if (req.body?.sharingApproved === true) { if (lead.consent !== true) return res.status(409).json({ error: 'Buyer consent is not recorded.' }); lead.sharingApprovedAt = new Date().toISOString(); }
   if (req.body?.matchedSupplierId !== undefined) { const supplierId = String(req.body.matchedSupplierId || ''); if (supplierId && !(next.suppliers || []).some(x => x.id === supplierId && x.status === 'Active')) return res.status(400).json({ error: 'Select an active supplier.' }); lead.matchedSupplierId = supplierId; lead.referralStatus = supplierId ? 'Candidate' : 'Unmatched'; }
@@ -610,7 +610,7 @@ app.get('/api/suppliers', requireAuth, (req, res) => res.json({ suppliers: state
 app.post('/api/suppliers', requireAuth, async (req, res) => {
   const b = req.body || {}, name = String(b.name || '').trim().slice(0,160);
   if (!name) return res.status(400).json({ error: 'Supplier name is required.' });
-  const supplier = { id: crypto.randomUUID(), name, contactName: String(b.contactName || '').trim().slice(0,120), email: String(b.email || '').trim().slice(0,254), phone: String(b.phone || '').trim().slice(0,40), website: String(b.website || '').trim().slice(0,300), zipCodes: String(b.zipCodes || '').split(/[\\s,;]+/).filter(x => /^\\d{5}$/.test(x)).slice(0,100), regions: String(b.regions || '').trim().slice(0,300), equipment: String(b.equipment || '').trim().slice(0,300), attachments: String(b.attachments || '').trim().slice(0,300), feeModel: ['fixed','percent','negotiated'].includes(b.feeModel) ? b.feeModel : 'negotiated', feeAmount: Math.max(0, Math.min(100000, Number(b.feeAmount) || 0)), agreementStatus: b.agreementStatus === 'Agreed' ? 'Agreed' : 'Pending', status: 'Active', createdAt: new Date().toISOString() };
+  const supplier = { id: crypto.randomUUID(), name, contactName: String(b.contactName || '').trim().slice(0,120), email: String(b.email || '').trim().slice(0,254), phone: String(b.phone || '').trim().slice(0,40), website: String(b.website || '').trim().slice(0,300), zipCodes: String(b.zipCodes || '').split(/[\s,;]+/).filter(x => /^\d{5}$/.test(x)).slice(0,100), regions: String(b.regions || '').trim().slice(0,300), equipment: String(b.equipment || '').trim().slice(0,300), attachments: String(b.attachments || '').trim().slice(0,300), feeModel: ['fixed','percent','negotiated'].includes(b.feeModel) ? b.feeModel : 'negotiated', feeAmount: Math.max(0, Math.min(100000, Number(b.feeAmount) || 0)), agreementStatus: b.agreementStatus === 'Agreed' ? 'Agreed' : 'Pending', status: 'Active', createdAt: new Date().toISOString() };
   const next = structuredClone(state); next.suppliers.unshift(supplier); await saveState(next); res.status(201).json({ supplier });
 });
 app.patch('/api/suppliers/:id', requireAuth, async (req, res) => {
