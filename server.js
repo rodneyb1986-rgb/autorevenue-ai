@@ -294,13 +294,51 @@ async function getStripeTransactionSnapshot(stripe) {
       availableOn: tx.available_on || null,
       sourceId,
       customerEmail: charge?.billing_details?.email || charge?.receipt_email || '',
+      paymentIntentId: typeof charge?.payment_intent === 'string' ? charge.payment_intent : charge?.payment_intent?.id || '',
       paymentStatus: charge?.status || '',
       refunded: charge ? charge.amount_refunded / 100 : null
     };
   });
+  const paidOrders = (state.orders || []).filter(order => order.paymentStatus === 'paid');
+  const orderByPaymentIntent = new Map(paidOrders.filter(order => order.paymentIntentId).map(order => [order.paymentIntentId, order]));
+  const matchedOrderIds = new Set();
+  const matchedTransactionIds = new Set();
+  for (const tx of transactions) {
+    const order = tx.paymentIntentId ? orderByPaymentIntent.get(tx.paymentIntentId) : null;
+    if (order && ['charge', 'payment'].includes(tx.type) && tx.amount > 0) {
+      matchedOrderIds.add(order.id);
+      matchedTransactionIds.add(tx.id);
+    }
+  }
+  const currencyTotals = rows => rows.reduce((out, row) => {
+    const currency = String(row.currency || 'USD').toUpperCase();
+    out[currency] = Number(((out[currency] || 0) + Number(row.amount || 0)).toFixed(2));
+    return out;
+  }, {});
+  const paidPayouts = payouts.data.filter(p => p.status === 'paid');
+  const pendingPayouts = payouts.data.filter(p => ['pending', 'in_transit'].includes(p.status));
+  const reconciliation = {
+    paidOrderCount: paidOrders.length,
+    matchedOrderCount: matchedOrderIds.size,
+    unmatchedPaidOrderCount: paidOrders.length - matchedOrderIds.size,
+    unmatchedPaidOrders: paidOrders.filter(order => !matchedOrderIds.has(order.id)).map(order => ({
+      id: order.id, productName: order.productName || 'Stripe order',
+      amount: Number(order.amountTotal || 0), currency: String(order.currency || 'USD').toUpperCase(),
+      paymentIntentId: order.paymentIntentId || '', createdAt: order.createdAt || ''
+    })),
+    unmatchedStripePaymentCount: transactions.filter(tx => ['charge', 'payment'].includes(tx.type) && tx.amount > 0 && !matchedTransactionIds.has(tx.id)).length,
+    paidOrderTotals: currencyTotals(paidOrders.map(order => ({ amount: order.amountTotal, currency: order.currency }))),
+    paidPayoutCount: paidPayouts.length,
+    paidPayoutTotals: currencyTotals(paidPayouts),
+    pendingPayoutCount: pendingPayouts.length,
+    pendingPayoutTotals: currencyTotals(pendingPayouts),
+    failedPayoutCount: payouts.data.filter(p => ['failed', 'canceled'].includes(p.status)).length,
+    note: 'Payouts are transfers of Stripe funds, not additional sales. Unmatched items may reflect webhook timing, older than the 100-record retrieval window, or payments created outside this app.'
+  };
   return {
     mode: 'test',
     currency: 'USD',
+    reconciliation,
     balance: {
       available: balance.available.map(x => ({ currency: x.currency.toUpperCase(), amount: x.amount / 100 })),
       pending: balance.pending.map(x => ({ currency: x.currency.toUpperCase(), amount: x.amount / 100 }))
