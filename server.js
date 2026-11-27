@@ -540,11 +540,16 @@ app.post('/api/public/leads', limited('public-lead', 4, 60 * 60 * 1000), async (
     const attachment = String(body.attachment || '').trim().slice(0, 160);
     const timeline = String(body.timeline || '').trim().slice(0, 80);
     const details = String(body.details || '').trim().slice(0, 1500);
+    const source = String(body.source || 'Direct').trim().slice(0, 100);
+    const utmSource = String(body.utmSource || '').trim().slice(0, 100);
+    const utmMedium = String(body.utmMedium || '').trim().slice(0, 100);
+    const utmCampaign = String(body.utmCampaign || '').trim().slice(0, 120);
+
     if (name.length < 2 || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email) || !/^\\d{5}(-\\d{4})?$/.test(zip)) return res.status(400).json({ error: 'Enter your name, a valid email address and a 5-digit ZIP code.' });
     if (!attachment || !timeline || !['Immediately','Within 30 days','1–3 months','Just researching'].includes(timeline)) return res.status(400).json({ error: 'Choose an attachment and purchase timeline.' });
     if (body.consent !== true) return res.status(400).json({ error: 'Consent is required so we can respond to your request.' });
     const score = (phone ? 15 : 0) + (equipment ? 20 : 0) + (model ? 15 : 0) + (timeline === 'Immediately' ? 35 : timeline === 'Within 30 days' ? 25 : timeline === '1–3 months' ? 15 : 5) + (attachment ? 15 : 0);
-    const lead = { id: crypto.randomUUID(), name, email, phone, zip, equipment, model, attachment, timeline, details, consent: true, consentText: 'Agreed to be contacted about this request and to have details shared with a matched equipment supplier if one is found.', score, status: score >= 70 ? 'Qualified' : 'New', source: 'Skid steer attachment finder', createdAt: new Date().toISOString() };
+    const lead = { id: crypto.randomUUID(), name, email, phone, zip, equipment, model, attachment, timeline, details, source, utmSource, utmMedium, utmCampaign, consent: true, consentText: 'Agreed to be contacted about this request and to have details shared with a matched equipment supplier if one is found.', score, status: score >= 70 ? 'Qualified' : 'New', source: 'Skid steer attachment finder', createdAt: new Date().toISOString() };
     const next = structuredClone(state);
     next.leads = Array.isArray(next.leads) ? next.leads : [];
     next.leads.unshift(lead);
