@@ -231,7 +231,7 @@ app.get('/api/health', (req, res) => res.json({
   aiConfigured: Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL),
   persistentStorage: Boolean(process.env.DATABASE_URL), storageMode: pool ? 'postgres' : 'local-json', storageReady, sessionStorage: pool ? 'postgres' : 'memory', aiCostRatesConfigured: Boolean(Number(process.env.OPENAI_INPUT_USD_PER_1M) || Number(process.env.OPENAI_OUTPUT_USD_PER_1M))
 }));
-app.post('/api/login', limited('login', 10, 15 * 60 * 1000), (req, res) => {
+app.post('/api/login', limited('login', 10, 15 * 60 * 1000), async (req, res) => {
   const password = String(req.body?.password || '');
   if (!process.env.ADMIN_PASSWORD) return res.status(503).json({ error: 'Admin sign-in is not configured. Add ADMIN_PASSWORD in Render environment variables.' });
   const expected = Buffer.from(process.env.ADMIN_PASSWORD), supplied = Buffer.from(password);
