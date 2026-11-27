@@ -120,6 +120,20 @@ $('#save-campaign-metrics').onclick=async()=>{
  try{await save();['impressions','clicks','leads','conversions','spend','revenue','notes'].forEach(k=>$('#metric-'+k).value='');}catch(e){alert(e.message)}
 };
 $('#metric-campaign').addEventListener('change',()=>render());
+
+$('#run-optimization').addEventListener('click',async()=>{
+ const button=$('#run-optimization'),out=$('#optimization-result');
+ button.disabled=true;out.classList.remove('hidden');out.textContent='Analyzing actual ledger entries, campaign performance and saved opportunities…';
+ try{
+  const result=await api('/api/optimization/analyze',{method:'POST',body:JSON.stringify({})}),report=result.report;
+  const lines=[report.summary,'','RECOMMENDATIONS',...report.recommendations.map((r,i)=>(i+1)+'. ['+r.priority+'] '+r.action+'\\n   Why: '+r.reason+'\\n   Measure: '+r.metric+'\\n   Effort: '+r.effort+' · Confidence: '+r.confidence+(r.requiresApproval?' · Owner approval required':''))];
+  if(report.dataGaps?.length)lines.push('','DATA GAPS',...report.dataGaps.map(x=>'• '+x));
+  out.textContent=lines.join('\\n');
+  await loadState();
+ }catch(error){out.textContent=error.message}
+ finally{button.disabled=false;button.textContent='Analyze revenue and recommend next steps'}
+});
+
 $('#add-campaign').onclick=async()=>{const name=$('#campaign-name').value.trim();if(!name)return alert('Enter a campaign name.');state.campaigns.unshift({id:Date.now(),name,channel:$('#campaign-channel').value,goal:$('#campaign-goal').value,duration:$('#campaign-duration').value,plan:$('#campaign-plan').value,status:'Planned',created:new Date().toISOString()});addActivity('Created campaign plan: '+name);await save();$('#campaign-name').value='';$('#campaign-goal').value='';$('#campaign-plan').value=''};
 $('#add-entry').onclick=async()=>{const amount=Number($('#entry-amount').value);if(!Number.isFinite(amount)||amount<=0)return alert('Enter an amount greater than zero.');state.revenue.push({id:Date.now(),type:$('#entry-type').value,amount,source:$('#entry-source').value||'Unspecified',date:$('#entry-date').value||new Date().toISOString().slice(0,10)});addActivity('Recorded '+$('#entry-type').value.toLowerCase()+' of '+money(amount));await save();$('#entry-amount').value='';$('#entry-source').value=''};
 $('#save-settings').onclick=async()=>{state.settings={...state.settings,niche:$('#setting-niche').value,monthlyGoal:Number($('#setting-goal').value)||0,autonomy:$('#setting-autonomy').value,strategies:[...$$('.strategy:checked')].map(x=>x.value)};addActivity('Updated workspace settings');await save();alert('Settings saved.')};
