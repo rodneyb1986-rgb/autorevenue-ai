@@ -15,7 +15,7 @@ const attempts = new Map();
 let requestCount = 0;
 let storageReady = false;
 const DEFAULT_STATE = {
-  opportunities: [], campaigns: [], content: [], revenue: [], approvals: [], automationRuns: [], golfOpportunities: [], products: [], orders: [], subscriptions: [],
+  opportunities: [], campaigns: [], content: [], revenue: [], approvals: [], automationRuns: [], aiUsage: [], golfOpportunities: [], products: [], orders: [], subscriptions: [],
   settings: { niche: '', monthlyGoal: 500, autonomy: 'approval', strategies: ['affiliate', 'digital-products', 'lead-generation', 'content'] },
   activity: []
 };
@@ -91,7 +91,7 @@ app.use(express.static(PUBLIC, { index: false }));
 
 let pool = null;
 let state = structuredClone(DEFAULT_STATE);
-const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'golfOpportunities', 'products', 'orders', 'subscriptions', 'activity'];
+const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'aiUsage', 'golfOpportunities', 'products', 'orders', 'subscriptions', 'activity'];
 const ALLOWED_STRATEGIES = ['affiliate', 'digital-products', 'lead-generation', 'content', 'services'];
 function sanitizeJson(value, depth = 0) {
   if (value === null || typeof value === 'boolean') return value;
@@ -160,6 +160,26 @@ function saveState(next) {
   const pending = saveQueue.then(write);
   saveQueue = pending.catch(() => {});
   return pending;
+}
+async function recordAIUsage(completion, purpose) {
+  try {
+    const usage = completion?.usage || {};
+    const next = structuredClone(state);
+    next.aiUsage = Array.isArray(next.aiUsage) ? next.aiUsage : [];
+    next.aiUsage.unshift({
+      id: crypto.randomUUID(),
+      purpose: String(purpose || 'AI request').slice(0, 80),
+      model: String(process.env.OPENAI_MODEL || '').slice(0, 120),
+      promptTokens: Math.max(0, Number(usage.prompt_tokens) || 0),
+      completionTokens: Math.max(0, Number(usage.completion_tokens) || 0),
+      totalTokens: Math.max(0, Number(usage.total_tokens) || 0),
+      createdAt: new Date().toISOString()
+    });
+    next.aiUsage = next.aiUsage.slice(0, 500);
+    await saveState(next);
+  } catch (error) {
+    console.error('AI usage tracking failed:', error.message);
+  }
 }
 function clientIp(req) { return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown'; }
 function limited(bucket, max, windowMs) {
@@ -393,7 +413,8 @@ app.post('/api/generate', requireAuth, limited('generate', 30, 60 * 60 * 1000), 
     });
     const result = completion.choices?.[0]?.message?.content?.trim();
     if (!result) throw new Error('The model returned an empty response.');
-    res.json({ result, model: process.env.OPENAI_MODEL });
+    await recordAIUsage(completion, 'Content generation');
+     res.json({ result, model: process.env.OPENAI_MODEL });
   } catch (error) {
     console.error('AI generation failed:', error.message);
     res.status(502).json({ error: 'AI generation failed. Check OPENAI_MODEL, API project access, and Render logs.' });
@@ -437,7 +458,8 @@ app.post('/api/opportunities/analyze', requireAuth, limited('opportunity-analysi
     next.opportunities = [...opportunities, ...(next.opportunities || [])].slice(0,500);
     next.activity = [{ message: 'Analyzed and ranked ' + opportunities.length + ' business opportunities', at: new Date().toISOString() }, ...(next.activity || [])].slice(0,40);
     await saveState(next);
-    res.json({ ok: true, opportunities, scoring: 'Weighted planning rubric; all scores and cost ranges are hypotheses pending validation.' });
+    await recordAIUsage(completion, 'Opportunity analysis');
+     res.json({ ok: true, opportunities, scoring: 'Weighted planning rubric; all scores and cost ranges are hypotheses pending validation.' });
   } catch (error) {
     console.error('Opportunity analysis failed:', error.message);
     res.status(502).json({ error: 'Opportunity analysis failed. Check Render logs and try again.' });
@@ -480,7 +502,8 @@ app.post('/api/automation/run', requireAuth, limited('automation', 5, 60 * 60 * 
     next.automationRuns = next.automationRuns.slice(0, 50);
     next.activity = [{ message: 'Automation run created an opportunity, campaign and content draft for review', at: now }, ...(next.activity || [])].slice(0, 40);
     await saveState(next);
-    res.json({ ok: true, created: { opportunity: opportunity.title, campaign: campaign.name, content: content.title }, approvalsRequired: 0, nextStep: plan.nextStep });
+    await recordAIUsage(completion, 'Automation cycle');
+     res.json({ ok: true, created: { opportunity: opportunity.title, campaign: campaign.name, content: content.title }, approvalsRequired: 0, nextStep: plan.nextStep });
   } catch (error) {
     console.error('Automation run failed:', error.message);
     res.status(502).json({ error: 'Automation could not complete this run. Check Render logs and try again.' });
