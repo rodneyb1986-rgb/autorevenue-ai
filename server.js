@@ -15,7 +15,7 @@ const attempts = new Map();
 let requestCount = 0;
 let storageReady = false;
 const DEFAULT_STATE = {
-  opportunities: [], campaigns: [], content: [], revenue: [], approvals: [], automationRuns: [], aiUsage: [], optimizationReports: [], golfOpportunities: [], products: [], orders: [], subscriptions: [], leads: [],
+  opportunities: [], campaigns: [], content: [], revenue: [], approvals: [], automationRuns: [], aiUsage: [], optimizationReports: [], golfOpportunities: [], products: [], orders: [], subscriptions: [], leads: [], suppliers: [],
   settings: { niche: '', monthlyGoal: 500, autonomy: 'approval', strategies: ['affiliate', 'digital-products', 'lead-generation', 'content'] },
   activity: []
 };
@@ -91,7 +91,7 @@ app.use(express.static(PUBLIC, { index: false }));
 
 let pool = null;
 let state = structuredClone(DEFAULT_STATE);
-const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'aiUsage', 'optimizationReports', 'golfOpportunities', 'products', 'orders', 'subscriptions', 'leads', 'activity'];
+const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'aiUsage', 'optimizationReports', 'golfOpportunities', 'products', 'orders', 'subscriptions', 'leads', 'suppliers', 'activity'];
 const ALLOWED_STRATEGIES = ['affiliate', 'digital-products', 'lead-generation', 'content', 'services'];
 function sanitizeJson(value, depth = 0) {
   if (value === null || typeof value === 'boolean') return value;
@@ -133,9 +133,17 @@ async function initStorage() {
     const { Pool } = require('pg');
     pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false }, max: 5, connectionTimeoutMillis: 10000 });
     await pool.query('CREATE TABLE IF NOT EXISTS autorevenue_ai_state (id integer PRIMARY KEY CHECK (id = 1), payload jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())');
+    await pool.query('CREATE TABLE IF NOT EXISTS autorevenue_ai_sessions (token_hash text PRIMARY KEY, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now())');
     const result = await pool.query('SELECT payload FROM autorevenue_ai_state WHERE id = 1');
     if (result.rows[0]) state = cleanState(result.rows[0].payload);
-    else await pool.query('INSERT INTO autorevenue_ai_state (id, payload) VALUES (1, $1)', [state]);
+    else {
+      let legacy = structuredClone(DEFAULT_STATE);
+      try { if (fs.existsSync(DATA_FILE)) legacy = cleanState(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'))); } catch (error) { console.warn('Legacy JSON migration skipped:', error.message); }
+      state = legacy;
+      await pool.query('INSERT INTO autorevenue_ai_state (id, payload) VALUES (1, $1)', [state]);
+      console.log('Initial PostgreSQL state created; imported legacy JSON records when available.');
+    }
+    await pool.query('DELETE FROM autorevenue_ai_sessions WHERE expires_at < now()');
     storageReady = true;
     console.log('Persistent PostgreSQL storage connected.');
   } else {
@@ -173,6 +181,7 @@ async function recordAIUsage(completion, purpose) {
       promptTokens: Math.max(0, Number(usage.prompt_tokens) || 0),
       completionTokens: Math.max(0, Number(usage.completion_tokens) || 0),
       totalTokens: Math.max(0, Number(usage.total_tokens) || 0),
+      estimatedCostUsd: Number(((Math.max(0, Number(usage.prompt_tokens) || 0) * (Number(process.env.OPENAI_INPUT_USD_PER_1M) || 0) + Math.max(0, Number(usage.completion_tokens) || 0) * (Number(process.env.OPENAI_OUTPUT_USD_PER_1M) || 0)) / 1000000).toFixed(6)),
       createdAt: new Date().toISOString()
     });
     next.aiUsage = next.aiUsage.slice(0, 500);
@@ -194,19 +203,24 @@ function limited(bucket, max, windowMs) {
     next();
   };
 }
-function createSession() {
+async function createSession() {
   const token = crypto.randomBytes(32).toString('hex');
-  sessions.set(token, Date.now() + 12 * 60 * 60 * 1000);
+  const expiresAt = new Date(Date.now() + 12 * 60 * 60 * 1000);
+  sessions.set(token, expiresAt.getTime());
+  if (pool) await pool.query('INSERT INTO autorevenue_ai_sessions (token_hash, expires_at) VALUES ($1, $2)', [crypto.createHash('sha256').update(token).digest('hex'), expiresAt]);
   return token;
 }
-function requireAuth(req, res, next) {
-  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  const expires = sessions.get(token);
-  if (!token || !expires || expires < Date.now()) {
-    if (token) sessions.delete(token);
-    return res.status(401).json({ error: 'Please sign in again.' });
-  }
-  req.sessionToken = token; next();
+async function requireAuth(req, res, next) {
+  const token = (req.headers.authorization || '').replace(/^Bearer\\s+/i, '');
+  if (!token) return res.status(401).json({ error: 'Please sign in again.' });
+  try {
+    const hash = crypto.createHash('sha256').update(token).digest('hex');
+    let valid = false;
+    if (pool) { const result = await pool.query('SELECT 1 FROM autorevenue_ai_sessions WHERE token_hash = $1 AND expires_at > now()', [hash]); valid = result.rowCount > 0; }
+    else { const expires = sessions.get(token); valid = Boolean(expires && expires > Date.now()); }
+    if (!valid) { sessions.delete(token); return res.status(401).json({ error: 'Please sign in again.' }); }
+    req.sessionToken = token; next();
+  } catch (error) { console.error('Session validation failed:', error.message); res.status(503).json({ error: 'Session service temporarily unavailable.' }); }
 }
 app.get('/api/health', (req, res) => res.json({
   ok: true, app: 'AutoRevenue AI', version: '2.0.0',
@@ -215,16 +229,16 @@ app.get('/api/health', (req, res) => res.json({
   stripeWebhookConfigured: Boolean(process.env.STRIPE_WEBHOOK_SECRET),
   emailDeliveryConfigured: Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM),
   aiConfigured: Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL),
-  persistentStorage: Boolean(process.env.DATABASE_URL), storageMode: pool ? 'postgres' : 'local-json', storageReady
+  persistentStorage: Boolean(process.env.DATABASE_URL), storageMode: pool ? 'postgres' : 'local-json', storageReady, sessionStorage: pool ? 'postgres' : 'memory', aiCostRatesConfigured: Boolean(Number(process.env.OPENAI_INPUT_USD_PER_1M) || Number(process.env.OPENAI_OUTPUT_USD_PER_1M))
 }));
 app.post('/api/login', limited('login', 10, 15 * 60 * 1000), (req, res) => {
   const password = String(req.body?.password || '');
   if (!process.env.ADMIN_PASSWORD) return res.status(503).json({ error: 'Admin sign-in is not configured. Add ADMIN_PASSWORD in Render environment variables.' });
   const expected = Buffer.from(process.env.ADMIN_PASSWORD), supplied = Buffer.from(password);
   if (expected.length !== supplied.length || !crypto.timingSafeEqual(expected, supplied)) return res.status(401).json({ error: 'Incorrect password.' });
-  res.json({ token: createSession() });
+  try { res.json({ token: await createSession() }); } catch (error) { console.error('Session creation failed:', error.message); res.status(503).json({ error: 'Could not create a secure session.' }); }
 });
-app.post('/api/logout', requireAuth, (req, res) => { sessions.delete(req.sessionToken); res.json({ ok: true }); });
+app.post('/api/logout', requireAuth, async (req, res) => { sessions.delete(req.sessionToken); if (pool) await pool.query('DELETE FROM autorevenue_ai_sessions WHERE token_hash = $1', [crypto.createHash('sha256').update(req.sessionToken).digest('hex')]); res.json({ ok: true }); });
 
 async function sendDigitalDeliveryEmail(order) {
   if (!process.env.RESEND_API_KEY || !process.env.EMAIL_FROM) {
@@ -549,7 +563,7 @@ app.post('/api/public/leads', limited('public-lead', 4, 60 * 60 * 1000), async (
     if (!attachment || !timeline || !['Immediately','Within 30 days','1–3 months','Just researching'].includes(timeline)) return res.status(400).json({ error: 'Choose an attachment and purchase timeline.' });
     if (body.consent !== true) return res.status(400).json({ error: 'Consent is required so we can respond to your request.' });
     const score = (phone ? 15 : 0) + (equipment ? 20 : 0) + (model ? 15 : 0) + (timeline === 'Immediately' ? 35 : timeline === 'Within 30 days' ? 25 : timeline === '1–3 months' ? 15 : 5) + (attachment ? 15 : 0);
-    const lead = { id: crypto.randomUUID(), name, email, phone, zip, equipment, model, attachment, timeline, details, source, utmSource, utmMedium, utmCampaign, consent: true, consentText: 'Agreed to be contacted about this request and to have details shared with a matched equipment supplier if one is found.', score, status: score >= 70 ? 'Qualified' : 'New', source: 'Skid steer attachment finder', createdAt: new Date().toISOString() };
+    const lead = { id: crypto.randomUUID(), name, email, phone, zip, equipment, model, attachment, timeline, details, source, utmSource, utmMedium, utmCampaign, consent: true, consentText: 'Agreed to be contacted about this request and to have details shared with a matched equipment supplier if one is found.', score, status: score >= 70 ? 'Qualified' : 'New', followUpAt: '', followUpNote: '', referralStatus: 'Unmatched', matchedSupplierId: '', sharingApprovedAt: '', createdAt: new Date().toISOString() };
     const next = structuredClone(state);
     next.leads = Array.isArray(next.leads) ? next.leads : [];
     next.leads.unshift(lead);
@@ -562,15 +576,32 @@ app.post('/api/public/leads', limited('public-lead', 4, 60 * 60 * 1000), async (
 app.get('/api/leads', requireAuth, (req, res) => res.json({ leads: state.leads || [] }));
 app.patch('/api/leads/:id', requireAuth, async (req, res) => {
   const allowed = ['New','Qualified','Contacted','Converted','Closed'];
-  const status = String(req.body?.status || '');
-  if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid lead status.' });
-  const next = structuredClone(state);
-  const lead = (next.leads || []).find(x => x.id === req.params.id);
+  const next = structuredClone(state), lead = (next.leads || []).find(x => x.id === req.params.id);
   if (!lead) return res.status(404).json({ error: 'Lead not found.' });
-  lead.status = status; lead.updatedAt = new Date().toISOString();
-  await saveState(next);
-  res.json({ ok: true, lead });
+  if (req.body?.status !== undefined) { const status = String(req.body.status); if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid lead status.' }); lead.status = status; }
+  if (req.body?.followUpAt !== undefined) { const value = String(req.body.followUpAt || ''); if (value && !/^\\d{4}-\\d{2}-\\d{2}$/.test(value)) return res.status(400).json({ error: 'Follow-up date must be YYYY-MM-DD.' }); lead.followUpAt = value; }
+  if (req.body?.followUpNote !== undefined) lead.followUpNote = String(req.body.followUpNote || '').trim().slice(0, 500);
+  if (req.body?.sharingApproved === true) { if (lead.consent !== true) return res.status(409).json({ error: 'Buyer consent is not recorded.' }); lead.sharingApprovedAt = new Date().toISOString(); }
+  if (req.body?.matchedSupplierId !== undefined) { const supplierId = String(req.body.matchedSupplierId || ''); if (supplierId && !(next.suppliers || []).some(x => x.id === supplierId && x.status === 'Active')) return res.status(400).json({ error: 'Select an active supplier.' }); lead.matchedSupplierId = supplierId; lead.referralStatus = supplierId ? 'Candidate' : 'Unmatched'; }
+  if (req.body?.referralStatus !== undefined) { const allowedReferral = ['Unmatched','Candidate','Approved to Share','Sent','Accepted','Rejected','Converted','Fee Received']; const value = String(req.body.referralStatus); if (!allowedReferral.includes(value)) return res.status(400).json({ error: 'Invalid referral status.' }); if (['Approved to Share','Sent','Accepted','Converted','Fee Received'].includes(value) && !lead.sharingApprovedAt) return res.status(409).json({ error: 'Approve buyer-information sharing first.' }); lead.referralStatus = value; }
+  if (req.body?.referralFeeReceived !== undefined) { const amount = Number(req.body.referralFeeReceived); if (!Number.isFinite(amount) || amount <= 0 || amount > 1000000) return res.status(400).json({ error: 'Enter a valid referral payment amount.' }); if (lead.referralStatus !== 'Converted') return res.status(409).json({ error: 'Mark the referral Converted before recording received payment.' }); if (lead.referralFeeReceivedAt) return res.status(409).json({ error: 'Referral payment has already been recorded.' }); lead.referralFeeReceived = amount; lead.referralFeeReceivedAt = new Date().toISOString(); next.revenue.unshift({ id: crypto.randomUUID(), type: 'Income', amount, source: 'Verified referral fee received · Lead ' + lead.id, date: new Date().toISOString().slice(0,10), referralLeadId: lead.id, recordedAt: new Date().toISOString() }); lead.referralStatus = 'Fee Received'; }
+  lead.updatedAt = new Date().toISOString(); await saveState(next); res.json({ ok: true, lead });
 });
+app.get('/api/suppliers', requireAuth, (req, res) => res.json({ suppliers: state.suppliers || [] }));
+app.post('/api/suppliers', requireAuth, async (req, res) => {
+  const b = req.body || {}, name = String(b.name || '').trim().slice(0,160);
+  if (!name) return res.status(400).json({ error: 'Supplier name is required.' });
+  const supplier = { id: crypto.randomUUID(), name, contactName: String(b.contactName || '').trim().slice(0,120), email: String(b.email || '').trim().slice(0,254), phone: String(b.phone || '').trim().slice(0,40), website: String(b.website || '').trim().slice(0,300), zipCodes: String(b.zipCodes || '').split(/[\\s,;]+/).filter(x => /^\\d{5}$/.test(x)).slice(0,100), regions: String(b.regions || '').trim().slice(0,300), equipment: String(b.equipment || '').trim().slice(0,300), attachments: String(b.attachments || '').trim().slice(0,300), feeModel: ['fixed','percent','negotiated'].includes(b.feeModel) ? b.feeModel : 'negotiated', feeAmount: Math.max(0, Math.min(100000, Number(b.feeAmount) || 0)), agreementStatus: b.agreementStatus === 'Agreed' ? 'Agreed' : 'Pending', status: 'Active', createdAt: new Date().toISOString() };
+  const next = structuredClone(state); next.suppliers.unshift(supplier); await saveState(next); res.status(201).json({ supplier });
+});
+app.patch('/api/suppliers/:id', requireAuth, async (req, res) => {
+  const next = structuredClone(state), supplier = (next.suppliers || []).find(x => x.id === req.params.id);
+  if (!supplier) return res.status(404).json({ error: 'Supplier not found.' });
+  if (req.body?.status !== undefined) { if (!['Active','Inactive'].includes(req.body.status)) return res.status(400).json({ error: 'Invalid supplier status.' }); supplier.status = req.body.status; }
+  if (req.body?.agreementStatus !== undefined) { if (!['Pending','Agreed'].includes(req.body.agreementStatus)) return res.status(400).json({ error: 'Invalid agreement status.' }); supplier.agreementStatus = req.body.agreementStatus; }
+  supplier.updatedAt = new Date().toISOString(); await saveState(next); res.json({ supplier });
+});
+app.get('/api/leads/follow-ups', requireAuth, (req, res) => { const today = new Date().toISOString().slice(0,10); res.json({ leads: (state.leads || []).filter(x => x.followUpAt && x.followUpAt <= today && !['Closed','Converted'].includes(x.status)) }); });
 app.get('/api/state', requireAuth, (req, res) => res.json(state));
 app.put('/api/state', requireAuth, limited('state-write', 120, 60 * 1000), async (req, res) => {
   try {
