@@ -115,14 +115,33 @@ function renderDashboardCharts(){
 async function handleAction(action){const parts=action.split(':'),kind=parts[0],i=Number(parts[1]);if(kind==='campaign-from-idea'){const idea=state.opportunities.find(x=>String(x.id)===String(parts[1]));if(idea){state.campaigns.unshift({id:Date.now(),name:'Validation: '+idea.title,channel:'Website / blog',goal:'Validate demand for '+idea.offer,duration:(idea.validationDays||14)+' days',plan:'Target customer: '+(idea.customer||'To define')+'\\nProblem: '+(idea.problem||'')+'\\nOffer: '+(idea.offer||'')+'\\nMonetization hypothesis: '+(idea.monetization||'')+'\\nValidation steps: '+(idea.validationSteps||[]).join(' | ')+'\\nMain risk: '+(idea.mainRisk||'')+'\\nAI score: '+(idea.score??'N/A')+'/100; hypothesis only.',status:'Draft · validation required',sourceOpportunityId:idea.id,created:new Date().toISOString()});view('campaigns');}} if(kind==='content-from-campaign'){const campaign=state.campaigns.find(x=>String(x.id)===String(parts[1]));if(campaign){const brief='CAMPAIGN: '+campaign.name+'\\nCHANNEL: '+(campaign.channel||'To decide')+'\\nGOAL: '+(campaign.goal||'')+'\\nAUDIENCE / OFFER / PLAN:\\n'+(campaign.plan||'')+'\\n\\nCreate useful, truthful content that supports this campaign goal. Include a clear call to action, but do not invent product claims, customer results, pricing, or guarantees. Treat this as a draft for human review.';state.content.unshift({id:Date.now(),title:'Content brief: '+campaign.name,type:'Campaign content brief',body:brief,status:'Draft',campaignId:campaign.id,created:new Date().toISOString()});addActivity('Created content brief for '+campaign.name);view('content');}} if(kind==='delete-idea')state.opportunities.splice(i,1);if(kind==='delete-content')state.content.splice(i,1);if(kind==='delete-campaign')state.campaigns.splice(i,1);if(kind==='approve-content'){const x=state.content[i];state.approvals.unshift({id:Date.now(),title:'Content: '+x.title,details:x.body,status:'Pending',created:new Date().toISOString()})}if(kind==='approve-campaign'){const x=state.campaigns[i];state.approvals.unshift({id:Date.now(),title:'Campaign: '+x.name,details:x.plan,status:'Pending',created:new Date().toISOString()})}if(kind==='approve'||kind==='reject'){state.approvals[i].status=kind==='approve'?'Approved':'Rejected';state.approvals[i].decidedAt=new Date().toISOString()}if(kind==='golf-delete'){state.golfOpportunities.splice(i,1)}if(kind==='golf-applied'){state.golfOpportunities[i].status='Application prepared / submitted manually';state.golfOpportunities[i].updatedAt=new Date().toISOString()}addActivity(kind.replaceAll('-',' ')+' updated');try{await save()}catch(e){alert(e.message)}}
 
 $('#run-automation').addEventListener('click',runAutomation);
+$('#refresh-automation').addEventListener('click',refreshAutomationStatus);
+async function refreshAutomationStatus(){
+ const modules=$('#automation-modules'),tasks=$('#automation-tasks');
+ modules.innerHTML='<div class="empty">Checking modules…</div>';
+ try{
+  const r=await api('/api/automation/status');
+  renderAutomationSnapshot(r);
+ }catch(e){modules.innerHTML='<div class="empty">'+esc(e.message)+'</div>'}
+}
+function renderAutomationSnapshot(snapshot){
+ const modules=$('#automation-modules'),tasks=$('#automation-tasks');
+ const names={opportunities:'Opportunity Finder',content:'Content Studio',campaigns:'Campaign Planner',commerce:'Products & Checkout',buyerLeads:'Buyer Leads',suppliers:'Supplier Partners',revenue:'Revenue & Profit',optimization:'Optimization',approvals:'Approval Queue'};
+ modules.innerHTML='<div class="form-grid">'+Object.entries(snapshot.modules||{}).map(([key,m])=>'<div class="metric"><span>'+esc(names[key]||key)+'</span><strong>'+esc(m.items??m.net??0)+'</strong><small class="'+(m.status==='attention'?'warn':'ok')+'">'+esc(m.status==='attention'?'Needs attention':'Reviewed')+'</small><small>'+esc(m.detail||'')+'</small></div>').join('')+'</div>';
+ const rows=snapshot.tasks||[];
+ tasks.innerHTML='<div class="panel-head subhead"><h3>Central action queue · '+rows.length+'</h3></div>'+(rows.length?rows.map(t=>'<div class="record"><div><strong>'+esc(t.title)+'</strong><p>'+esc(t.detail)+'</p><small>'+esc(t.type.replaceAll('_',' '))+'</small></div><span class="tag">'+esc(t.action==='approval_required'?'APPROVAL':'REVIEW')+'</span></div>').join(''):'<div class="empty">No internal action items are currently due.</div>');
+ $('#automation-schedule').textContent=snapshot.scheduledExecution?'SCHEDULED':'MANUAL / EVENT-DRIVEN';
+}
+
 $('#logout').addEventListener('click',async()=>{try{if(token)await api('/api/logout',{method:'POST'})}catch{}finally{logoutLocal()}});
 
 async function runAutomation(){
  const button=$('#run-automation'), output=$('#automation-result');
  button.disabled=true;button.textContent='Building plan…';output.classList.remove('hidden');output.textContent='AI is preparing an opportunity, campaign and content draft…';
  try{
-  const r=await api('/api/automation/run',{method:'POST',body:JSON.stringify({niche:state.settings.niche,strategies:state.settings.strategies})});
-  output.textContent='Created: '+r.created.opportunity+' · '+r.created.campaign+' · '+r.created.content+'\\nNo external actions were taken. Drafts are saved for the next step: '+r.nextStep;
+  const r=await api('/api/automation/run-cycle',{method:'POST',body:JSON.stringify({})});
+  renderAutomationSnapshot(r.snapshot);
+  output.textContent='Full-app review completed. '+r.run.counts.tasks+' action items generated: '+r.run.counts.dueLeads+' lead follow-ups, '+r.run.counts.failedDeliveries+' delivery issues, '+r.run.counts.pendingApprovals+' approvals and '+r.run.counts.unmatchedLeads+' supplier matches to review. No external actions, paid actions or customer-data sharing occurred.';
   await loadState();
  }catch(e){output.textContent=e.message}
  finally{button.disabled=false;button.textContent='Run automation cycle'}
