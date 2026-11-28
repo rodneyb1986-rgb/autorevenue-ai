@@ -175,8 +175,29 @@ function renderAgentSnapshot(snapshot,lastRun){
 async function refreshAgentStatus(){
  const result=await api('/api/automation/status');
  renderAgentSnapshot(result,result.lastRun);
+ await refreshPersistentAgentTasks();
  return result;
 }
+async function refreshPersistentAgentTasks(){
+ const result=await api('/api/agent/tasks');
+ const tasks=result.tasks||[];
+ const summary=result.counts||{};
+ const target=$('#agent-work-queue');
+ if(!target)return;
+ target.innerHTML='<div class="agent-queue-summary">'+summary.new+' new · '+summary.inProgress+' in progress · '+summary.blocked+' blocked · '+summary.completed+' completed</div>'+
+ (tasks.length?tasks.slice(0,30).map((task,i)=>'<article class="agent-task"><span class="agent-task-rank">'+(i+1)+'</span><div><strong>'+esc(task.title)+'</strong><p>'+esc(task.detail)+'</p><small>'+esc(task.type.replaceAll('_',' '))+' · '+esc(task.priorityBand)+' priority ('+(Number(task.priorityScore)||0)+'/100) · '+esc(task.status)+' · Seen '+Number(task.occurrences||1)+' time(s)</small>'+
+ '<div class="button-row">'+(task.status!=='In progress'?'<button class="mini" data-agent-task-status="In progress" data-agent-task-id="'+esc(task.id)+'">Start</button>':'')+
+ (task.status!=='Blocked'?'<button class="mini secondary" data-agent-task-status="Blocked" data-agent-task-id="'+esc(task.id)+'">Block</button>':'')+
+ (task.status!=='Dismissed'?'<button class="mini secondary" data-agent-task-status="Dismissed" data-agent-task-id="'+esc(task.id)+'">Dismiss</button>':'')+'</div>'+
+ (task.executionLog||[]).slice(0,2).map(log=>'<small>'+esc(log.status||log.event)+' · '+esc(new Date(log.at).toLocaleString())+(log.note?' · '+esc(log.note):'')+'</small>').join('')+'</div></article>').join(''):'<div class="empty">No persistent agent tasks yet. Run an agent review to build the queue.</div>');
+}
+$('#agent-work-queue').addEventListener('click',async e=>{
+ const button=e.target.closest('[data-agent-task-status]');
+ if(!button)return;
+ button.disabled=true;
+ try{await api('/api/agent/tasks/'+encodeURIComponent(button.dataset.agentTaskId),{method:'PATCH',body:JSON.stringify({status:button.dataset.agentTaskStatus})});await refreshPersistentAgentTasks();}
+ catch(error){alert(error.message);button.disabled=false;}
+});
 $('#agent-run-now').addEventListener('click',async()=>{
  const button=$('#agent-run-now'),out=$('#agent-run-result'),stateLabel=$('#agent-state');
  button.disabled=true;button.textContent='Agent reviewing…';stateLabel.textContent='RUNNING REVIEW';stateLabel.className='agent-state running';
