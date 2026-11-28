@@ -751,6 +751,34 @@ function buildAutomationSnapshot(source) {
   const pendingApprovals = approvals.filter(x => x.status === 'Pending');
   const unmatchedLeads = leads.filter(x => !x.matchedSupplierId && !['Converted','Closed'].includes(x.status));
   const activeSuppliers = (source.suppliers || []).filter(x => x.status === 'Active');
+  const latestOptimization = (Array.isArray(source.optimizationReports) ? source.optimizationReports : []).slice().sort((a,b)=>Date.parse(b.createdAt||0)-Date.parse(a.createdAt||0))[0];
+  const savedOpportunities = Array.isArray(source.opportunities) ? source.opportunities : [];
+  const campaigns = Array.isArray(source.campaigns) ? source.campaigns : [];
+  const hasCampaignEvidence = campaigns.some(c => Array.isArray(c.metrics) && c.metrics.length);
+  if (latestOptimization?.recommendations?.length) {
+    for (const recommendation of latestOptimization.recommendations.slice(0,5)) tasks.push({
+      type:'revenue_experiment',title:'Revenue action: '+String(recommendation.action||'Review recommendation').slice(0,110),
+      detail:String(recommendation.reason||'Review the latest evidence-based optimization recommendation.').slice(0,360)+' Measure: '+String(recommendation.metric||'Record outcome and cost.').slice(0,180),
+      recordId:latestOptimization.id,action:'review_recommendation',recommendationPriority:recommendation.priority||'Medium',
+      requiresApproval:Boolean(recommendation.requiresApproval),confidence:recommendation.confidence||'Low',effort:recommendation.effort||'Medium'
+    });
+  } else if (savedOpportunities.length) {
+    const candidate=savedOpportunities.slice().sort((a,b)=>(Number(b.score)||0)-(Number(a.score)||0))[0];
+    tasks.push({type:'revenue_experiment',title:'Validate top opportunity: '+String(candidate.title||'Saved business idea').slice(0,110),
+      detail:'Choose one low-cost validation step, record the cost and success threshold, and verify demand before investing. This is a planning hypothesis, not a sales forecast.',
+      recordId:candidate.id,action:'validate_opportunity',recommendationPriority:'High',confidence:candidate.confidence||'Low',effort:'Low',requiresApproval:false});
+  } else if (String(source.settings?.niche||'').trim()) {
+    tasks.push({type:'revenue_experiment',title:'Build a ranked revenue opportunity shortlist',
+      detail:'Analyze the configured niche and compare low-cost validation experiments. Estimates must be labeled and validated before spending.',
+      action:'generate_opportunity_shortlist',recommendationPriority:'High',confidence:'Low',effort:'Low',requiresApproval:false});
+  } else {
+    tasks.push({type:'measurement',title:'Set the revenue focus before choosing an experiment',
+      detail:'Add a primary niche and monthly revenue goal in Settings so the agent can rank relevant, measurable opportunities.',
+      action:'configure_revenue_focus',recommendationPriority:'Medium',confidence:'High',effort:'Low',requiresApproval:false});
+  }
+  if (!hasCampaignEvidence) tasks.push({type:'measurement',title:'Instrument the next campaign before launch',
+    detail:'Record impressions, clicks, leads, conversions, spend and attributed revenue for any test. Do not infer performance from drafts or plans.',
+    action:'measure_campaign',recommendationPriority:'Medium',confidence:'High',effort:'Low',requiresApproval:false});
   const income = revenue.filter(x => x.type === 'Income').reduce((n,x)=>n+Math.max(0,Number(x.amount)||0),0);
   const expenses = revenue.filter(x => x.type === 'Expense').reduce((n,x)=>n+Math.max(0,Number(x.amount)||0),0);
   const tasks = [];
@@ -762,14 +790,17 @@ function buildAutomationSnapshot(source) {
     delivery_attention:{base:95,impact:'Protects a paid customer order',effort:'Low–medium',risk:'Customer-impacting'},
     approval:{base:75,impact:'Unblocks a pending decision',effort:'Low',risk:'Requires owner decision'},
     lead_follow_up:{base:65,impact:'May recover a qualified buyer opportunity',effort:'Low',risk:'Requires manual review'},
-    supplier_match:{base:40,impact:'May improve lead fulfilment potential',effort:'Medium',risk:'Buyer consent required before sharing'}
+    supplier_match:{base:40,impact:'May improve lead fulfilment potential',effort:'Medium',risk:'Buyer consent required before sharing'},
+    revenue_experiment:{base:70,impact:'Advances a measurable revenue experiment',effort:'Low–medium',risk:'Validate assumptions; owner approval for paid or external actions'},
+    measurement:{base:50,impact:'Improves evidence quality for revenue decisions',effort:'Low',risk:'No external action'}
   };
   const rankedTasks = tasks.map(task => {
     const rule = priorityRules[task.type] || {base:30,impact:'Needs review',effort:'Unknown',risk:'Review required'};
     const lead = task.type==='lead_follow_up' || task.type==='supplier_match' ? leads.find(x=>String(x.id)===String(task.recordId)) : null;
     const dueTime = lead?.followUpAt ? new Date(lead.followUpAt+'T23:59:59').getTime() : null;
     const overdueDays = Number.isFinite(dueTime) && dueTime!==null ? Math.max(0,Math.floor((now-dueTime)/86400000)) : 0;
-    const score = Math.min(100,rule.base + Math.min(20,overdueDays*4) + (lead && Number(lead.score)>=80 ? 5 : 0));
+    const recommendationBoost = task.recommendationPriority==='High'?10:task.recommendationPriority==='Low'?-10:0;
+    const score = Math.min(100,Math.max(0,rule.base + Math.min(20,overdueDays*4) + (lead && Number(lead.score)>=80 ? 5 : 0) + recommendationBoost));
     return {...task,priorityScore:score,priorityBand:score>=85?'Critical':score>=65?'High':score>=45?'Medium':'Low',impact:rule.impact,effort:rule.effort,risk:rule.risk,overdueDays,priorityReason:overdueDays?'Follow-up is '+overdueDays+' day(s) overdue.':rule.impact+'.'};
   }).sort((x,y)=>y.priorityScore-x.priorityScore);
   return {
