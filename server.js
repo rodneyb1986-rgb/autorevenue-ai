@@ -688,6 +688,34 @@ app.post('/api/generate', requireAuth, limited('generate', 30, 60 * 60 * 1000), 
 });
 
 
+app.post('/api/experiments/build', requireAuth, limited('experiment-build', 5, 60 * 60 * 1000), async (req,res) => {
+  if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) return res.status(503).json({error:'AI is not configured. Check the test service settings.'});
+  const opportunityId=String(req.body?.opportunityId||'').slice(0,100);
+  const opportunity=(state.opportunities||[]).find(x=>String(x.id)===opportunityId);
+  if(!opportunity) return res.status(404).json({error:'Saved opportunity not found. Refresh the workspace and try again.'});
+  try {
+    const OpenAI=require('openai'),client=new OpenAI({apiKey:process.env.OPENAI_API_KEY,timeout:30000,maxRetries:0});
+    const system='You are a rigorous small-business experiment designer. Return only valid JSON. Use only supplied opportunity details and clearly label every estimate or hypothesis. Do not invent verified market prices, demand, customer counts, conversion rates, margins, sales or earnings. Never treat a hypothetical price or threshold as actual. Prefer a 7-day, zero-spend validation test. No spam, deceptive claims, unsolicited messages, or sharing personal data. Any paid activity, customer contact, publication, or external action requires owner approval.';
+    const prompt='Design a practical experiment for this saved opportunity: '+JSON.stringify({title:opportunity.title,customer:opportunity.customer,problem:opportunity.problem,offer:opportunity.offer,monetization:opportunity.monetization,startupCostLow:opportunity.startupCostLow,startupCostHigh:opportunity.startupCostHigh,validationDays:opportunity.validationDays,validationSteps:opportunity.validationSteps,assumptions:opportunity.assumptions,mainRisk:opportunity.mainRisk,confidence:opportunity.confidence})+'. Return JSON with exactly: {"targetCustomer":"...","problem":"...","offer":"...","pricingHypothesis":"... label as unverified","costModel":{"oneTimeCostEstimateUSD":0,"variableCostPerSaleEstimateUSD":0,"priceHypothesisUSD":0,"breakEvenSalesAtHypothesis":0,"formula":"...","assumptions":["..."]},"sevenDayPlan":[{"day":1,"task":"...","evidenceToCapture":"..."}],"successThreshold":"measurable proposed threshold, explicitly a test assumption","failureOrPivotThreshold":"measurable proposed threshold, explicitly a test assumption","campaign":{"name":"...","channel":"...","goal":"...","draft":"..."},"content":{"title":"...","type":"...","draft":"..."},"risks":["..."],"nextAction":"..."}. Use 7 daily entries. If costs/prices are unknown, use zero/null where needed and explain missing inputs; do not manufacture numeric precision. Keep all copy truthful and label the campaign/content as drafts.';
+    const completion=await client.chat.completions.create({model:process.env.OPENAI_MODEL,messages:[{role:'system',content:system},{role:'user',content:prompt}],max_completion_tokens:2600});
+    let raw=(completion.choices?.[0]?.message?.content||'').trim().replace(/^`{3}(?:json)?s*/i,'').replace(/s*`{3}$/,'');
+    const plan=JSON.parse(raw);
+    if(typeof plan.targetCustomer!=='string'||!Array.isArray(plan.sevenDayPlan)||!plan.campaign||!plan.content) throw new Error('Experiment planner returned incomplete structured data.');
+    plan.sevenDayPlan=plan.sevenDayPlan.slice(0,7).map((x,i)=>({day:i+1,task:String(x.task||'').slice(0,500),evidenceToCapture:String(x.evidenceToCapture||'').slice(0,400)}));
+    if(plan.sevenDayPlan.length!==7||plan.sevenDayPlan.some(x=>!x.task)) throw new Error('Experiment planner did not return seven usable daily steps.');
+    const saved={id:crypto.randomUUID(),opportunityId:opportunity.id,opportunityTitle:opportunity.title,createdAt:new Date().toISOString(),status:'Draft · validation required',plan};
+    const next=structuredClone(state);next.experiments=Array.isArray(next.experiments)?next.experiments:[];
+    next.experiments.unshift(saved);next.experiments=next.experiments.slice(0,50);
+    next.campaigns=Array.isArray(next.campaigns)?next.campaigns:[];
+    next.content=Array.isArray(next.content)?next.content:[];
+    next.campaigns.unshift({id:Date.now(),name:String(plan.campaign.name||'Validation experiment').slice(0,160),channel:String(plan.campaign.channel||'To decide').slice(0,80),goal:String(plan.campaign.goal||'Validate demand').slice(0,300),duration:'7 days',plan:String(plan.campaign.draft||'').slice(0,5000),status:'Draft · owner review required',sourceExperimentId:saved.id,created:new Date().toISOString()});
+    next.content.unshift({id:Date.now()+1,title:String(plan.content.title||'Experiment content draft').slice(0,180),type:String(plan.content.type||'Experiment draft').slice(0,80),body:String(plan.content.draft||'').slice(0,8000),status:'Draft · not published',sourceExperimentId:saved.id,created:new Date().toISOString()});
+    next.activity=[{message:'Built a seven-day validation experiment for '+opportunity.title,at:saved.createdAt},...(next.activity||[])].slice(0,40);
+    await saveState(next);await recordAIUsage(completion,'Experiment planning');
+    res.json({ok:true,experiment:saved,campaignCreated:true,contentCreated:true,externalActions:0});
+  } catch(error){console.error('Experiment planning failed:',error.message);res.status(502).json({error:'Could not build the experiment. Check the test service logs and try again.'});}
+});
+
 app.post('/api/opportunities/analyze', requireAuth, limited('opportunity-analysis', 8, 60 * 60 * 1000), async (req, res) => {
   if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) return res.status(503).json({ error: 'AI is not configured. Check OPENAI_API_KEY and OPENAI_MODEL in Render.' });
   const niche = String(req.body?.niche || state.settings.niche || '').trim().slice(0, 160);
