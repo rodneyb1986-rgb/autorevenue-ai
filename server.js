@@ -1023,7 +1023,7 @@ app.post('/api/automation/run', requireAuth, limited('automation', 5, 60 * 60 * 
 });
 
 
-app.post('/api/optimization/analyze', requireAuth, limited('optimization', 3, 60 * 60 * 1000), async (req, res) => {
+app.post('/api/optimization/analyze', requireAuth, limited('optimization', 3, 60 * 60 * 1000), aiDailyBudget, async (req, res) => {
   if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) {
     return res.status(503).json({ error: 'AI is not configured. Check OPENAI_API_KEY and OPENAI_MODEL in Render.' });
   }
