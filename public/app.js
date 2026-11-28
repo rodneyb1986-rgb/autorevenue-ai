@@ -63,7 +63,7 @@ $('#supplier-add').addEventListener('click',async()=>{const name=$('#supplier-na
 $('#supplier-list').addEventListener('change',async e=>{const el=e.target.closest('[data-supplier-status],[data-supplier-agreement]');if(!el)return;const id=el.dataset.supplierId,payload=el.hasAttribute('data-supplier-status')?{status:el.value}:{agreementStatus:el.value};try{const r=await api('/api/suppliers/'+encodeURIComponent(id),{method:'PATCH',body:JSON.stringify(payload)});const i=state.suppliers.findIndex(x=>x.id===id);if(i>=0)state.suppliers[i]=r.supplier;render()}catch(err){alert(err.message)}});
 
 function addActivity(message){state.activity.unshift({message,at:new Date().toISOString()});state.activity=state.activity.slice(0,40)}
-function record(title,body,status,actions){let buttons=actions.map(a=>'<button class="mini" data-action="'+a[1]+'">'+esc(a[0])+'</button>').join('');return '<div class="record"><div><strong>'+esc(title)+'</strong><p>'+esc(body||'')+'</p><small>'+esc(status||'')+'</small></div><div class="record-actions">'+buttons+'</div></div>'}
+function record(title,body,status,actions){let buttons=actions.map(a=>'<button class="mini" data-action="'+a[1]+'">'+esc(a[0])+'</button>').join('');const displayBody=String(body||'').replace(/\\n/g,'\n');return '<div class="record"><div><strong>'+esc(title)+'</strong><p>'+esc(displayBody)+'</p><small>'+esc(status||'')+'</small></div><div class="record-actions">'+buttons+'</div></div>'}
 function renderDashboardCharts(){
  const revenue=Array.isArray(state.revenue)?state.revenue:[];
  const now=new Date(),months=[];
