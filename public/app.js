@@ -132,8 +132,18 @@ function render(){
  const aiRows=Array.isArray(state.aiUsage)?state.aiUsage:[],today=new Date().toISOString().slice(0,10),month=today.slice(0,7),todayRows=aiRows.filter(x=>String(x.createdAt||'').startsWith(today)),monthRows=aiRows.filter(x=>String(x.createdAt||'').startsWith(month)),tokens=rows=>rows.reduce((n,x)=>n+Number(x.totalTokens||0),0);
  const usageBox=$('#ai-usage-summary');if(usageBox)usageBox.textContent='Today: '+todayRows.length+' requests · '+tokens(todayRows).toLocaleString()+' tokens | This month: '+monthRows.length+' requests · '+tokens(monthRows).toLocaleString()+' tokens.';const costBox=$('#ai-cost-summary');if(costBox){const cost=rows=>rows.reduce((n,x)=>n+Number(x.estimatedCostUsd||0),0);costBox.textContent=aiPricingConfigured?'Estimated API cost · today: '+money(cost(todayRows))+' · this month: '+money(cost(monthRows))+'. Based on the per-million-token rates configured in Render.':'API cost estimates are not enabled yet. Configure OPENAI_INPUT_USD_PER_1M and OPENAI_OUTPUT_USD_PER_1M in Render using the rates for your selected model.';}
  $('#setting-niche').value=state.settings.niche||'';$('#setting-goal').value=state.settings.monthlyGoal??500;$('#setting-autonomy').value=state.settings.autonomy||'approval';$$('.strategy').forEach(c=>c.checked=(state.settings.strategies||[]).includes(c.value));
- $$('[data-action]').forEach(b=>b.onclick=()=>handleAction(b.dataset.action));
+
 }
+document.addEventListener('click',e=>{
+ const button=e.target.closest('button[data-action]');
+ if(!button)return;
+ const action=button.dataset.action||'';
+ // Checkout and order controls have dedicated handlers that call their own APIs.
+ if(action.startsWith('commerce-checkout:')||action.startsWith('commerce-fulfill:')||action.startsWith('commerce-email-retry:'))return;
+ if(button.dataset.actionRunning==='true')return;
+ button.dataset.actionRunning='true';
+ Promise.resolve(handleAction(action)).catch(error=>alert(error.message||'That action could not be completed.')).finally(()=>{button.dataset.actionRunning='false'});
+});
 async function handleAction(action){const parts=action.split(':'),kind=parts[0],i=Number(parts[1]);
  if(kind==='build-experiment'){
   const button=[...document.querySelectorAll('[data-action]')].find(x=>x.dataset.action===action);
@@ -220,7 +230,6 @@ async function runAutomation(){
 }
 
 async function generate(type,prompt,niche,target){target.classList.remove('hidden');target.textContent='Working…';try{const r=await api('/api/generate',{method:'POST',body:JSON.stringify({type,prompt,niche})});target.textContent=r.result;return r.result}catch(e){target.textContent=e.message;return ''}}
-$('#idea-result').addEventListener('click',e=>{const b=e.target.closest('[data-action]');if(b)handleAction(b.dataset.action)});
 $('#generate-ideas').onclick=async()=>{
  const niche=$('#idea-niche').value||state.settings.niche,strategy=$('#idea-strategy').value,focus=$('#idea-prompt').value,target=$('#idea-result');
  target.classList.remove('hidden');target.textContent='Analyzing opportunities and scoring validation potential…';
