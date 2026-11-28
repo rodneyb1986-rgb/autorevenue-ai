@@ -43,6 +43,6 @@ test('daily AI guard applies one shared persistent 24-hour bucket', () => {
   });
   let nextCalled = false;
   middleware({}, {}, () => { nextCalled = true; });
-  assert.deepEqual(captured, ['ai-daily-budget', 12, DAY_MS]);
+  assert.deepEqual(captured, ['ai-daily-budget', 12, DAY_MS, { shared: true }]);
   assert.equal(nextCalled, true);
 });
