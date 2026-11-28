@@ -15,7 +15,7 @@ const attempts = new Map();
 let requestCount = 0;
 let storageReady = false;
 const DEFAULT_STATE = {
-  opportunities: [], campaigns: [], content: [], revenue: [], approvals: [], automationRuns: [], aiUsage: [], optimizationReports: [], golfOpportunities: [], products: [], orders: [], subscriptions: [], leads: [], suppliers: [],
+  opportunities: [], campaigns: [], content: [], revenue: [], approvals: [], automationRuns: [], agentTasks: [], aiUsage: [], optimizationReports: [], golfOpportunities: [], products: [], orders: [], subscriptions: [], leads: [], suppliers: [],
   settings: { niche: '', monthlyGoal: 500, autonomy: 'approval', strategies: ['affiliate', 'digital-products', 'lead-generation', 'content'] },
   activity: []
 };
@@ -94,7 +94,7 @@ app.use(express.static(PUBLIC, { index: false }));
 
 let pool = null;
 let state = structuredClone(DEFAULT_STATE);
-const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'aiUsage', 'optimizationReports', 'golfOpportunities', 'products', 'orders', 'subscriptions', 'leads', 'suppliers', 'activity'];
+const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'agentTasks', 'aiUsage', 'optimizationReports', 'golfOpportunities', 'products', 'orders', 'subscriptions', 'leads', 'suppliers', 'activity'];
 const ALLOWED_STRATEGIES = ['affiliate', 'digital-products', 'lead-generation', 'content', 'services'];
 function sanitizeJson(value, depth = 0) {
   if (value === null || typeof value === 'boolean') return value;
@@ -848,6 +848,42 @@ function buildAutomationSnapshot(source) {
     counts:{tasks:tasks.length,dueLeads:dueLeads.length,failedDeliveries:failedDeliveries.length,pendingApprovals:pendingApprovals.length,unmatchedLeads:unmatchedLeads.length}
   };
 }
+
+function syncPersistentAgentTasks(snapshot, sourceState=state) {
+  const next=structuredClone(sourceState);
+  const existing=Array.isArray(next.agentTasks)?next.agentTasks:[];
+  const byFingerprint=new Map(existing.map(task=>[task.fingerprint,task]));
+  const now=new Date().toISOString();
+  for(const item of snapshot.tasks||[]) {
+    const fingerprint=crypto.createHash('sha256').update([item.type,item.action,item.recordId,item.title].map(x=>String(x||'')).join('|')).digest('hex');
+    const prior=byFingerprint.get(fingerprint);
+    if(prior) {
+      Object.assign(prior,{detail:item.detail||prior.detail,priorityScore:item.priorityScore,priorityBand:item.priorityBand,requiresApproval:Boolean(item.requiresApproval),confidence:item.confidence||prior.confidence,effort:item.effort||prior.effort,lastSeenAt:now,updatedAt:now,occurrences:(Number(prior.occurrences)||1)+1});
+    } else {
+      const task={id:crypto.randomUUID(),fingerprint,type:item.type||'review',title:String(item.title||'Review action').slice(0,240),detail:String(item.detail||'').slice(0,2000),recordId:item.recordId||null,action:item.action||null,priorityScore:Number(item.priorityScore)||0,priorityBand:item.priorityBand||'Low',requiresApproval:Boolean(item.requiresApproval),confidence:item.confidence||'unrated',effort:item.effort||'Unknown',status:'New',createdAt:now,updatedAt:now,firstSeenAt:now,lastSeenAt:now,occurrences:1,executionLog:[],result:null};
+      next.agentTasks.unshift(task);byFingerprint.set(fingerprint,task);
+    }
+  }
+  next.agentTasks=next.agentTasks.slice(0,500);
+  return next;
+}
+app.get('/api/agent/tasks',requireAuth,(req,res)=>{
+  const tasks=[...(state.agentTasks||[])].sort((a,b)=>(Number(b.priorityScore)||0)-(Number(a.priorityScore)||0));
+  res.json({ok:true,tasks,counts:{total:tasks.length,new:tasks.filter(x=>x.status==='New').length,inProgress:tasks.filter(x=>x.status==='In progress').length,blocked:tasks.filter(x=>x.status==='Blocked').length,completed:tasks.filter(x=>x.status==='Completed').length,dismissed:tasks.filter(x=>x.status==='Dismissed').length}});
+});
+app.patch('/api/agent/tasks/:id',requireAuth,async(req,res)=>{
+  const allowed=new Set(['In progress','Blocked','Dismissed']);
+  const status=String(req.body?.status||'');
+  if(!allowed.has(status))return res.status(400).json({error:'This update can only start, block, or dismiss a task. Completion requires a verified operation.'});
+  const note=String(req.body?.note||'').trim().slice(0,500);
+  const next=structuredClone(state),task=(next.agentTasks||[]).find(x=>x.id===req.params.id);
+  if(!task)return res.status(404).json({error:'Agent task not found.'});
+  const now=new Date().toISOString();task.status=status;task.updatedAt=now;
+  task.executionLog=Array.isArray(task.executionLog)?task.executionLog:[];
+  task.executionLog.unshift({at:now,event:'status_changed',status,note});
+  await saveState(next);res.json({ok:true,task});
+});
+
 app.get('/api/automation/status', requireAuth, async (req,res) => {
   const snapshot=buildAutomationSnapshot(state);
   const latest=(state.automationRuns||[]).find(x=>x.kind==='full_cycle');
@@ -861,7 +897,7 @@ app.post('/api/automation/run-cycle', requireAuth, limited('automation-cycle', 6
     const snapshot=buildAutomationSnapshot(state);
     const now=new Date().toISOString();
     const run={id:crypto.randomUUID(),kind:'full_cycle',status:'Completed · review tasks generated',created:now,counts:snapshot.counts,modules:Object.keys(snapshot.modules),scheduledExecution:false};
-    const next=structuredClone(state);
+    const next=syncPersistentAgentTasks(snapshot,structuredClone(state));
     next.automationRuns=[run,...(next.automationRuns||[])].slice(0,50);
     next.activity=[{message:'Full-app automation cycle reviewed all modules and generated '+snapshot.counts.tasks+' internal action items',at:now},...(next.activity||[])].slice(0,40);
     await saveState(next);
@@ -884,7 +920,7 @@ async function runScheduledAgentCycle(trigger='interval') {
     const snapshot=buildAutomationSnapshot(state);
     const now=new Date().toISOString();
     const run={id:crypto.randomUUID(),kind:'scheduled_review',trigger,status:'Completed · scheduled workspace review',created:now,counts:snapshot.counts,modules:Object.keys(snapshot.modules),tasks:snapshot.tasks.slice(0,50),executionMode:'approval_first_internal_only',externalMessagesSent:0,paidActions:0,customerDataShared:0,contentPublished:0};
-    const next=structuredClone(state);
+    const next=syncPersistentAgentTasks(snapshot,structuredClone(state));
     next.automationRuns=[run,...(next.automationRuns||[])].slice(0,50);
     next.activity=[{message:'Scheduled agent review completed '+snapshot.counts.tasks+' internal action items; no external actions taken.',at:now},...(next.activity||[])].slice(0,40);
     await saveState(next);
