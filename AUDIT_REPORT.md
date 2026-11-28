@@ -64,7 +64,7 @@ It is not yet ready to be described as a fully autonomous revenue operator. Its 
 
 ## Stage 1 implementation update
 
-- Added a shared PostgreSQL-backed daily AI request ceiling to the AI connection test, content generation, experiment builder, and agent task planning routes.
+- Added a shared PostgreSQL-backed daily AI request ceiling to the AI connection test, content generation, experiment builder, opportunity analysis, agent task planning, automation planning, and revenue optimization routes.
 - Default ceiling is 20 requests per 24-hour window; `AI_MAX_REQUESTS_PER_DAY` can lower or raise it up to 1,000.
 - AI endpoints fail closed if PostgreSQL is unavailable, avoiding an unsafe in-memory-only budget counter.
 - Added `node --test` test infrastructure and focused tests for limit parsing, fail-closed behavior, and shared daily-bucket enforcement.
