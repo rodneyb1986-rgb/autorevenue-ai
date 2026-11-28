@@ -96,6 +96,12 @@ let pool = null;
 let state = structuredClone(DEFAULT_STATE);
 const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'agentTasks', 'aiUsage', 'optimizationReports', 'golfOpportunities', 'products', 'orders', 'subscriptions', 'leads', 'suppliers', 'activity'];
 const ALLOWED_STRATEGIES = ['affiliate', 'digital-products', 'lead-generation', 'content', 'services'];
+const { createDailyBudgetGuard } = require('./lib/ai-budget');
+const aiDailyBudget = createDailyBudgetGuard({
+  getPool: () => pool,
+  getLimiter: limited,
+  getLimit: () => process.env.AI_MAX_REQUESTS_PER_DAY
+});
 function sanitizeJson(value, depth = 0) {
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'string') return value.slice(0, 10000);
@@ -635,7 +641,7 @@ app.put('/api/state', requireAuth, limited('state-write', 120, 60 * 1000), async
     await saveState(req.body); res.json({ ok: true, updatedAt: new Date().toISOString() });
   } catch (error) { console.error('State save failed:', error.message); res.status(500).json({ error: 'Could not save workspace data.' }); }
 });
-app.post('/api/ai/test', requireAuth, limited('ai-test', 3, 10 * 60 * 1000), async (req, res) => {
+app.post('/api/ai/test', requireAuth, limited('ai-test', 3, 10 * 60 * 1000), aiDailyBudget, async (req, res) => {
   if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) {
     return res.status(503).json({ ok: false, error: 'AI configuration is incomplete. Check OPENAI_API_KEY and OPENAI_MODEL in Render.' });
   }
@@ -663,7 +669,7 @@ app.post('/api/ai/test', requireAuth, limited('ai-test', 3, 10 * 60 * 1000), asy
   }
 });
 
-app.post('/api/generate', requireAuth, limited('generate', 30, 60 * 60 * 1000), async (req, res) => {
+app.post('/api/generate', requireAuth, limited('generate', 30, 60 * 60 * 1000), aiDailyBudget, async (req, res) => {
   const { type = 'content', prompt = '', niche = '' } = req.body || {};
   if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'AI is not configured. Add OPENAI_API_KEY in Render environment variables.' });
   if (!process.env.OPENAI_MODEL) return res.status(503).json({ error: 'Set OPENAI_MODEL to a model available to your API project.' });
@@ -688,7 +694,7 @@ app.post('/api/generate', requireAuth, limited('generate', 30, 60 * 60 * 1000), 
 });
 
 
-app.post('/api/experiments/build', requireAuth, limited('experiment-build', 5, 60 * 60 * 1000), async (req,res) => {
+app.post('/api/experiments/build', requireAuth, limited('experiment-build', 5, 60 * 60 * 1000), aiDailyBudget, async (req,res) => {
   if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) return res.status(503).json({error:'AI is not configured. Check the test service settings.'});
   const opportunityId=String(req.body?.opportunityId||'').slice(0,100);
   const opportunity=(state.opportunities||[]).find(x=>String(x.id)===opportunityId);
@@ -872,7 +878,7 @@ app.get('/api/agent/tasks',requireAuth,(req,res)=>{
   res.json({ok:true,tasks,counts:{total:tasks.length,new:tasks.filter(x=>x.status==='New').length,inProgress:tasks.filter(x=>x.status==='In progress').length,blocked:tasks.filter(x=>x.status==='Blocked').length,completed:tasks.filter(x=>x.status==='Completed').length,dismissed:tasks.filter(x=>x.status==='Dismissed').length}});
 });
 
-app.post('/api/agent/tasks/:id/plan',requireAuth,limited('agent-task-plan',10,60*60*1000),async(req,res)=>{
+app.post('/api/agent/tasks/:id/plan',requireAuth,limited('agent-task-plan',10,60*60*1000),aiDailyBudget,async(req,res)=>{
   const task=(state.agentTasks||[]).find(x=>x.id===req.params.id);
   if(!task)return res.status(404).json({error:'Agent task not found.'});
   if(!process.env.OPENAI_API_KEY||!process.env.OPENAI_MODEL)return res.status(503).json({error:'AI planning is not configured. Check OPENAI_API_KEY and OPENAI_MODEL.'});
