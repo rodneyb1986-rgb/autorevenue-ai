@@ -134,6 +134,44 @@ function render(){
 }
 async function handleAction(action){const parts=action.split(':'),kind=parts[0],i=Number(parts[1]);if(kind==='campaign-from-idea'){const idea=state.opportunities.find(x=>String(x.id)===String(parts[1]));if(idea){state.campaigns.unshift({id:Date.now(),name:'Validation: '+idea.title,channel:'Website / blog',goal:'Validate demand for '+idea.offer,duration:(idea.validationDays||14)+' days',plan:'Target customer: '+(idea.customer||'To define')+'\\nProblem: '+(idea.problem||'')+'\\nOffer: '+(idea.offer||'')+'\\nMonetization hypothesis: '+(idea.monetization||'')+'\\nValidation steps: '+(idea.validationSteps||[]).join(' | ')+'\\nMain risk: '+(idea.mainRisk||'')+'\\nAI score: '+(idea.score??'N/A')+'/100; hypothesis only.',status:'Draft · validation required',sourceOpportunityId:idea.id,created:new Date().toISOString()});view('campaigns');}} if(kind==='content-from-campaign'){const campaign=state.campaigns.find(x=>String(x.id)===String(parts[1]));if(campaign){const brief='CAMPAIGN: '+campaign.name+'\\nCHANNEL: '+(campaign.channel||'To decide')+'\\nGOAL: '+(campaign.goal||'')+'\\nAUDIENCE / OFFER / PLAN:\\n'+(campaign.plan||'')+'\\n\\nCreate useful, truthful content that supports this campaign goal. Include a clear call to action, but do not invent product claims, customer results, pricing, or guarantees. Treat this as a draft for human review.';state.content.unshift({id:Date.now(),title:'Content brief: '+campaign.name,type:'Campaign content brief',body:brief,status:'Draft',campaignId:campaign.id,created:new Date().toISOString()});addActivity('Created content brief for '+campaign.name);view('content');}} if(kind==='delete-idea')state.opportunities.splice(i,1);if(kind==='delete-content')state.content.splice(i,1);if(kind==='delete-campaign')state.campaigns.splice(i,1);if(kind==='approve-content'){const x=state.content[i];state.approvals.unshift({id:Date.now(),title:'Content: '+x.title,details:x.body,status:'Pending',created:new Date().toISOString()})}if(kind==='approve-campaign'){const x=state.campaigns[i];state.approvals.unshift({id:Date.now(),title:'Campaign: '+x.name,details:x.plan,status:'Pending',created:new Date().toISOString()})}if(kind==='approve'||kind==='reject'){state.approvals[i].status=kind==='approve'?'Approved':'Rejected';state.approvals[i].decidedAt=new Date().toISOString()}if(kind==='golf-delete'){state.golfOpportunities.splice(i,1)}if(kind==='golf-applied'){state.golfOpportunities[i].status='Application prepared / submitted manually';state.golfOpportunities[i].updatedAt=new Date().toISOString()}addActivity(kind.replaceAll('-',' ')+' updated');try{await save()}catch(e){alert(e.message)}}
 
+function renderAgentSnapshot(snapshot,lastRun){
+ const counts=snapshot?.counts||{},tasks=Array.isArray(snapshot?.tasks)?snapshot.tasks:[];
+ const byUrgency=tasks.slice().sort((x,y)=>({approval:0,delivery_attention:1,lead_follow_up:2,supplier_match:3}[x.type]??9)-({approval:0,delivery_attention:1,lead_follow_up:2,supplier_match:3}[y.type]??9));
+ const top=byUrgency[0];
+ $('#agent-task-count').textContent=Number(counts.tasks||0);
+ $('#agent-due-count').textContent=Number(counts.dueLeads||0);
+ $('#agent-approval-count').textContent=Number(counts.pendingApprovals||0);
+ $('#agent-blocked-count').textContent=Number(counts.failedDeliveries||0);
+ $('#agent-queue-count').textContent=tasks.length+' items';
+ $('#agent-state').textContent=tasks.length?'ATTENTION REQUIRED':'REVIEW COMPLETE';
+ $('#agent-state').className='agent-state '+(tasks.length?'attention':'ready');
+ $('#agent-last-run').textContent=lastRun?.created?'Last review · '+new Date(lastRun.created).toLocaleString():'Status refreshed · '+new Date(snapshot?.generatedAt||Date.now()).toLocaleString();
+ $('#agent-priority-title').textContent=top?top.title:'No urgent internal tasks found';
+ $('#agent-priority-detail').textContent=top?top.detail:'The current review found no due follow-ups, delivery issues, unmatched leads, or pending approvals. Review opportunities to choose a growth experiment.';
+ $('#agent-work-queue').innerHTML=byUrgency.length?byUrgency.slice(0,12).map((task,i)=>'<article class="agent-task"><span class="agent-task-rank">'+(i+1)+'</span><div><strong>'+esc(task.title)+'</strong><p>'+esc(task.detail)+'</p><small>'+esc(String(task.type||'review').replaceAll('_',' '))+'</small></div></article>').join(''):'<div class="empty">No action items found in this review. Check Opportunity Finder for the next growth experiment.</div>';
+}
+async function refreshAgentStatus(){
+ const result=await api('/api/automation/status');
+ renderAgentSnapshot(result,result.lastRun);
+ return result;
+}
+$('#agent-run-now').addEventListener('click',async()=>{
+ const button=$('#agent-run-now'),out=$('#agent-run-result'),stateLabel=$('#agent-state');
+ button.disabled=true;button.textContent='Agent reviewing…';stateLabel.textContent='RUNNING REVIEW';stateLabel.className='agent-state running';
+ out.classList.remove('hidden');out.textContent='Inspecting workspace records and prioritizing internal tasks…';
+ try{
+  const result=await api('/api/automation/run-cycle',{method:'POST',body:JSON.stringify({})});
+  renderAgentSnapshot(result.snapshot,result.run);
+  out.textContent='Review complete. '+Number(result.snapshot?.counts?.tasks||0)+' internal action items identified. No external actions were taken.';
+  await loadState();
+ }catch(error){stateLabel.textContent='REVIEW FAILED';stateLabel.className='agent-state attention';out.textContent=error.message;}
+ finally{button.disabled=false;button.textContent='▶ Run agent now';}
+});
+$('#agent-refresh').addEventListener('click',async()=>{
+ const button=$('#agent-refresh');button.disabled=true;
+ try{await refreshAgentStatus();}catch(error){const out=$('#agent-run-result');out.classList.remove('hidden');out.textContent=error.message;}
+ finally{button.disabled=false;}
+});
 $('#run-automation').addEventListener('click',runAutomation);
 $('#run-full-cycle').addEventListener('click',async()=>{
  const button=$('#run-full-cycle'),out=$('#automation-result');
