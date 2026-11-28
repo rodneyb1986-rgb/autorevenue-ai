@@ -1236,5 +1236,58 @@ app.get('*', (req, res) => {
   if (!fs.existsSync(file)) return res.status(500).send('Missing public/index.html');
   res.sendFile(file);
 });
-initStorage().then(() => { app.listen(PORT, () => console.log('AutoRevenue AI 2.0 listening on port ' + PORT)); startAgentScheduler(); })
+async function ensureSeoServiceProducts() {
+  const tiers = [
+    {
+      key: 'ai-seo-audit-49',
+      name: 'AI SEO Audit',
+      description: 'One-time website SEO review: technical and on-page issue checklist, keyword opportunities, page-title and meta-description recommendations, and prioritized next steps. This is an advisory audit, not a ranking guarantee.',
+      amount: 49,
+      billing: 'one_time',
+      interval: null,
+      deliveryContent: 'Thank you for purchasing the AI SEO Audit. To begin, reply to this email with your website URL, primary products or services, target locations (if relevant), and up to three priority pages. We will review the supplied information and provide an audit with prioritized recommendations. This is a one-time advisory service; implementation is not included unless separately agreed. Search rankings and traffic are not guaranteed.'
+    },
+    {
+      key: 'ai-seo-optimization-99-month',
+      name: 'AI SEO Optimization',
+      description: 'Monthly SEO improvement service: keyword and page mapping, on-page title/meta recommendations, product or service page content improvements, internal-linking suggestions, and a monthly progress summary. No guaranteed rankings or traffic.',
+      amount: 99,
+      billing: 'subscription',
+      interval: 'month',
+      deliveryContent: 'Thank you for subscribing to AI SEO Optimization. To onboard, reply with your website URL, primary products or services, target audience and locations, and the pages you most want to improve. The monthly service includes keyword/page mapping, on-page recommendations, content improvement suggestions, internal-linking recommendations, and a monthly progress summary. Work is performed as an advisory optimization service; website changes require access and approval. Rankings, traffic, and sales are not guaranteed. Your subscription renews monthly until canceled under the applicable billing terms.'
+    },
+    {
+      key: 'ai-seo-premium-199-month',
+      name: 'Premium AI SEO Management',
+      description: 'Expanded monthly SEO management: broader site and competitor review, priority keyword strategy, optimization recommendations across key pages, content roadmap, internal-linking plan, and monthly performance review. Implementation scope is agreed with the customer; no guaranteed rankings or traffic.',
+      amount: 199,
+      billing: 'subscription',
+      interval: 'month',
+      deliveryContent: 'Thank you for subscribing to Premium AI SEO Management. To onboard, reply with your website URL, products or services, target audience and locations, known competitors, analytics/search-console access availability, and your top business goals. The monthly service includes a broader site and competitor review, priority keyword strategy, recommendations across key pages, a content roadmap, internal-linking plan, and monthly performance review. Any direct website edits or publishing require agreed scope, access, and your approval. Rankings, traffic, and sales are not guaranteed. Your subscription renews monthly until canceled under the applicable billing terms.'
+    }
+  ];
+  const next = structuredClone(state);
+  next.products = Array.isArray(next.products) ? next.products : [];
+  let added = 0;
+  for (const tier of tiers) {
+    if (next.products.some(product => product.key === tier.key)) continue;
+    next.products.unshift({
+      id: crypto.randomUUID(),
+      ...tier,
+      type: 'digital',
+      currency: 'usd',
+      active: true,
+      createdAt: new Date().toISOString()
+    });
+    added++;
+  }
+  if (added) {
+    next.activity.unshift({ message: 'Added ' + added + ' AI SEO service tier(s) to the product catalogue', at: new Date().toISOString() });
+    await saveState(next);
+    console.log('AI SEO service catalogue seeded: ' + added + ' new tier(s).');
+  } else {
+    console.log('AI SEO service catalogue already contains all three tiers.');
+  }
+}
+initStorage().then(async () => { await ensureSeoServiceProducts(); app.listen(PORT, () => console.log('AutoRevenue AI 2.0 listening on port ' + PORT)); startAgentScheduler(); })
   .catch(error => { console.error('Startup failed:', error); process.exit(1); });
