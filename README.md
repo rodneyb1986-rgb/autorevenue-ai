@@ -13,10 +13,10 @@ Approval-first revenue operations workspace. This branch is an isolated test bui
 - ADMIN_PASSWORD: private dashboard sign-in password.
 - OPENAI_API_KEY: API key for the OpenAI project.
 - OPENAI_MODEL: exact model ID enabled for that API project. Do not guess this value.
-- DATABASE_URL: recommended PostgreSQL connection string for durable workspace data.
+- DATABASE_URL: required PostgreSQL connection string for durable hosted workspace data.
 - PGSSLMODE: optional; set to disable only for a database that explicitly does not use TLS.
 
-The app reports missing configuration in its health endpoint without exposing secrets. If DATABASE_URL is absent, it falls back to local JSON storage, which is not durable across all Render deploy/restart configurations.
+The app reports missing configuration in its health endpoint without exposing secrets. On Render, startup is refused if DATABASE_URL is absent, because the local JSON fallback is not durable across deploys/restarts.
 
 ## Current capabilities
 
@@ -27,10 +27,13 @@ The app reports missing configuration in its health endpoint without exposing se
 - PostgreSQL persistence when DATABASE_URL is configured.
 - AI generation is advisory: it does not publish, buy, message, or execute external actions.
 
+## PostgreSQL persistence verification
+
+At startup, the app writes and reads a harmless singleton marker in a dedicated diagnostic table. On a later startup, it checks whether the prior startup marker is still present before updating it. This verifies PostgreSQL persistence across application restarts without changing customer or revenue records.
+
 ## Approval model
 
 External integrations and actual posting/affiliate transactions are not enabled in this build. Campaigns and approvals are tracked in the workspace until those integrations are separately configured and explicitly authorized.
-
 
 ## AI usage safety limit
 
