@@ -139,3 +139,21 @@ footer{padding:30px 0 14px;color:#8295b1}
 @media(prefers-reduced-motion:reduce){
  *,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}
 }
+
+.dashboard-charts{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(280px,.75fr);gap:15px;margin:0 0 16px}
+.chart-panel{min-width:0;padding:19px}
+.chart-panel .panel-head{margin-bottom:12px}
+.chart-area{width:100%;min-height:190px}
+.chart-area svg{display:block;width:100%;height:auto;overflow:visible}
+.chart-legend{display:flex;gap:18px;flex-wrap:wrap;color:#aabbd0;font-size:11px;padding-top:7px}
+.chart-legend span{display:flex;align-items:center;gap:7px}
+.legend-dot{width:9px;height:9px;border-radius:3px;display:inline-block}
+.income-dot{background:#65d6b0}.expense-dot{background:#f0b66a}
+.pipeline-chart{display:grid;gap:13px;padding:10px 2px 3px}
+.pipeline-label{display:flex;justify-content:space-between;gap:12px;color:#b9c8dc;font-size:11px;margin-bottom:5px}
+.pipeline-label strong{color:#f3f7ff;font-variant-numeric:tabular-nums}
+.pipeline-track{height:9px;border-radius:20px;background:#263750;overflow:hidden}
+.pipeline-fill{height:100%;min-width:0;border-radius:20px;background:linear-gradient(90deg,#63d5b2,#77c9ee);transition:width .25s ease}
+.chart-note{padding-top:12px;border-top:1px solid #263750;margin-top:12px;line-height:1.5}
+@media(max-width:900px){.dashboard-charts{grid-template-columns:1fr}}
+@media(max-width:740px){.dashboard-charts{grid-template-columns:1fr;gap:10px}.chart-panel{padding:14px}.chart-area{min-height:155px}.chart-panel .panel-head{align-items:flex-start}.chart-panel .tag{font-size:8px;padding:6px 8px}.pipeline-chart{gap:11px}}
