@@ -952,12 +952,12 @@ app.post('/api/automation/run-cycle', requireAuth, limited('automation-cycle', 6
     const run={id:crypto.randomUUID(),kind:'full_cycle',status:'Completed · review tasks generated',created:now,counts:snapshot.counts,modules:Object.keys(snapshot.modules),scheduledExecution:false};
     const next=syncPersistentAgentTasks(snapshot,structuredClone(state));
     await saveState(next);
-    const planning=await prepareHighestPriorityTaskPlan(state.agentTasks||[]).catch(error=>{console.error('Scheduled task planning failed:',error.message);return {prepared:false,reason:'planning_error'};});
+    const planning=await prepareHighestPriorityTaskPlan(state.agentTasks||[]).catch(error=>{console.error('Agent task planning failed:',error.message);return {prepared:false,reason:'planning_error'};});
     run.taskPlanning=planning;
     const finalState=structuredClone(state);
     finalState.automationRuns=[run,...(finalState.automationRuns||[])].slice(0,50);
-    next.activity=[{message:'Full-app automation cycle reviewed all modules and generated '+snapshot.counts.tasks+' internal action items',at:now},...(next.activity||[])].slice(0,40);
-    await saveState(next);
+    finalState.activity=[{message:'Full-app automation cycle reviewed all modules and generated '+snapshot.counts.tasks+' internal action items; '+(planning.prepared?'prepared a no-spend plan for the highest-priority task':'no task plan prepared')+'; no external actions taken.',at:now},...(finalState.activity||[])].slice(0,40);
+    await saveState(finalState);
     res.json({ok:true,run,snapshot,safety:{externalMessagesSent:0,paidActions:0,customerDataShared:0,contentPublished:0}});
   } catch(error) {
     console.error('Full automation cycle failed:',error.message);
@@ -1013,8 +1013,12 @@ async function runScheduledAgentCycle(trigger='interval') {
     const now=new Date().toISOString();
     const run={id:crypto.randomUUID(),kind:'scheduled_review',trigger,status:'Completed · scheduled workspace review',created:now,counts:snapshot.counts,modules:Object.keys(snapshot.modules),tasks:snapshot.tasks.slice(0,50),executionMode:'approval_first_internal_only',externalMessagesSent:0,paidActions:0,customerDataShared:0,contentPublished:0};
     const next=syncPersistentAgentTasks(snapshot,structuredClone(state));
-    next.automationRuns=[run,...(next.automationRuns||[])].slice(0,50);
-    finalState.activity=[{message:'Scheduled agent review completed '+snapshot.counts.tasks+' internal action items; '+(planning.prepared?'prepared a work plan for the highest-priority task':'no task plan prepared')+'; no external actions taken.',at:now},...(finalState.activity||[])].slice(0,40);
+    await saveState(next);
+    const planning=await prepareHighestPriorityTaskPlan(state.agentTasks||[]).catch(error=>{console.error('Scheduled task planning failed:',error.message);return {prepared:false,reason:'planning_error'};});
+    run.taskPlanning=planning;
+    const finalState=structuredClone(state);
+    finalState.automationRuns=[run,...(finalState.automationRuns||[])].slice(0,50);
+    finalState.activity=[{message:'Scheduled agent review completed '+snapshot.counts.tasks+' internal action items; '+(planning.prepared?'prepared a no-spend plan for the highest-priority task':'no task plan prepared')+'; no external actions taken.',at:now},...(finalState.activity||[])].slice(0,40);
     await saveState(finalState);
     console.log('Scheduled agent review completed:',JSON.stringify({trigger,runId:run.id,tasks:snapshot.counts.tasks,taskPlanning:planning}));
     return {ok:true,run};
