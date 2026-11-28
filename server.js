@@ -581,7 +581,7 @@ app.post('/api/public/leads', limited('public-lead', 4, 60 * 60 * 1000), async (
     const utmMedium = String(body.utmMedium || '').trim().slice(0, 100);
     const utmCampaign = String(body.utmCampaign || '').trim().slice(0, 120);
 
-    if (name.length < 2 || !/^[^\s@]+@[^\s@]+\\.[^\s@]+$/.test(email) || !/^\d{5}(-\d{4})?$/.test(zip)) return res.status(400).json({ error: 'Enter your name, a valid email address and a 5-digit ZIP code.' });
+    if (name.length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !/^\d{5}(-\d{4})?$/.test(zip)) return res.status(400).json({ error: 'Enter your name, a valid email address and a 5-digit ZIP code.' });
     if (!attachment || !timeline || !['Immediately','Within 30 days','1–3 months','Just researching'].includes(timeline)) return res.status(400).json({ error: 'Choose an attachment and purchase timeline.' });
     if (body.consent !== true) return res.status(400).json({ error: 'Consent is required so we can respond to your request.' });
     const score = (phone ? 15 : 0) + (equipment ? 20 : 0) + (model ? 15 : 0) + (timeline === 'Immediately' ? 35 : timeline === 'Within 30 days' ? 25 : timeline === '1–3 months' ? 15 : 5) + (attachment ? 15 : 0);
