@@ -871,6 +871,41 @@ app.get('/api/agent/tasks',requireAuth,(req,res)=>{
   const tasks=[...(state.agentTasks||[])].sort((a,b)=>(Number(b.priorityScore)||0)-(Number(a.priorityScore)||0));
   res.json({ok:true,tasks,counts:{total:tasks.length,new:tasks.filter(x=>x.status==='New').length,inProgress:tasks.filter(x=>x.status==='In progress').length,blocked:tasks.filter(x=>x.status==='Blocked').length,completed:tasks.filter(x=>x.status==='Completed').length,dismissed:tasks.filter(x=>x.status==='Dismissed').length}});
 });
+
+app.post('/api/agent/tasks/:id/plan',requireAuth,limited('agent-task-plan',10,60*60*1000),async(req,res)=>{
+  const task=(state.agentTasks||[]).find(x=>x.id===req.params.id);
+  if(!task)return res.status(404).json({error:'Agent task not found.'});
+  if(!process.env.OPENAI_API_KEY||!process.env.OPENAI_MODEL)return res.status(503).json({error:'AI planning is not configured. Check OPENAI_API_KEY and OPENAI_MODEL.'});
+  try{
+    const OpenAI=require('openai'),client=new OpenAI({apiKey:process.env.OPENAI_API_KEY,timeout:90000});
+    const system='You are AutoRevenue AI, an approval-first operations planner. Return only valid JSON. Build a practical, low-cost internal work plan for the task. Do not invent facts, market research, prices, customer demand, or results. Separate assumptions from known task details. Default to $0 spend and no external contact or publication. Any step involving money, publishing, outreach, sharing data, or purchases must be marked approvalRequired=true and must not be executed.';
+    const prompt='Create a focused work plan for this saved task. Task title: '+task.title+'. Details: '+task.detail+'. Type: '+task.type+'. Return JSON with exactly: objective (string), assumptions (array of strings), steps (array of 3-6 objects with step, ownerAction, successCheck, approvalRequired boolean), successMetric (string), target (string), budgetCapUsd (number; default 0), timeboxDays (integer 1-14), risks (array of strings), nextAction (string). Use measurable criteria where possible, but do not invent baseline data. Make the first action achievable without spending money or contacting anyone.';
+    const completion=await client.chat.completions.create({model:process.env.OPENAI_MODEL,messages:[{role:'system',content:system},{role:'user',content:prompt}],max_completion_tokens:1400});
+    let raw=completion.choices?.[0]?.message?.content?.trim()||'';
+    raw=raw.replace(/^\`\`\`(?:json)?\s*/i,'').replace(/\s*\`\`\`$/,'');
+    const plan=JSON.parse(raw);
+    if(typeof plan.objective!=='string'||!Array.isArray(plan.steps)||!plan.steps.length||typeof plan.successMetric!=='string'||typeof plan.target!=='string')throw new Error('Planner returned an incomplete work plan.');
+    const next=structuredClone(state),saved=next.agentTasks.find(x=>x.id===req.params.id),now=new Date().toISOString();
+    saved.plan={objective:plan.objective.slice(0,1000),assumptions:(plan.assumptions||[]).slice(0,8),steps:plan.steps.slice(0,8),successMetric:plan.successMetric.slice(0,300),target:plan.target.slice(0,300),budgetCapUsd:Math.max(0,Number(plan.budgetCapUsd)||0),timeboxDays:Math.max(1,Math.min(14,Number(plan.timeboxDays)||7)),risks:(plan.risks||[]).slice(0,8),nextAction:String(plan.nextAction||'Review the first step').slice(0,500),createdAt:now};
+    saved.updatedAt=now;saved.executionLog=[{at:now,event:'plan_created',status:saved.status,note:'Internal work plan generated; no external actions taken.'},...(saved.executionLog||[])].slice(0,50);
+    await saveState(next);await recordAIUsage(completion,'Agent task work plan');
+    res.json({ok:true,task:saved});
+  }catch(error){console.error('Agent task planning failed:',error.message);res.status(502).json({error:'Could not create the task plan. Check AI configuration and Render logs.'});}
+});
+app.post('/api/agent/tasks/:id/result',requireAuth,async(req,res)=>{
+  const outcome=String(req.body?.outcome||'').trim().slice(0,1000);
+  const actual=String(req.body?.actual||'').trim().slice(0,300);
+  const confirmed=req.body?.ownerConfirmed===true;
+  if(!outcome)return res.status(400).json({error:'Enter what actually happened before recording a result.'});
+  const next=structuredClone(state),task=(next.agentTasks||[]).find(x=>x.id===req.params.id);
+  if(!task)return res.status(404).json({error:'Agent task not found.'});
+  const now=new Date().toISOString();
+  task.result={outcome,actual,ownerConfirmed:confirmed,recordedAt:now};
+  task.status=confirmed?'Completed':'In progress';task.updatedAt=now;
+  task.executionLog=[{at:now,event:confirmed?'owner_confirmed_result':'result_recorded',status:task.status,note:outcome.slice(0,500)},...(task.executionLog||[])].slice(0,50);
+  await saveState(next);res.json({ok:true,task,completionBasis:confirmed?'owner_confirmed':'result_recorded_not_completed'});
+});
+
 app.patch('/api/agent/tasks/:id',requireAuth,async(req,res)=>{
   const allowed=new Set(['In progress','Blocked','Dismissed']);
   const status=String(req.body?.status||'');
