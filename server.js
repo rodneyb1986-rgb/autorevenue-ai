@@ -851,7 +851,8 @@ function buildAutomationSnapshot(source) {
 app.get('/api/automation/status', requireAuth, async (req,res) => {
   const snapshot=buildAutomationSnapshot(state);
   const latest=(state.automationRuns||[]).find(x=>x.kind==='full_cycle');
-  res.json({ok:true,scheduledExecution:false,lastRun:latest||null,...snapshot});
+  const scheduled=(state.automationRuns||[]).find(x=>x.kind==='scheduled_review');
+  res.json({ok:true,scheduledExecution:true,schedulerMode:'best_effort_while_service_awake',scheduleHours:24,schedulerNote:'Runs on startup and checks every 15 minutes while this web service is awake. A sleeping free service cannot guarantee exact-time daily execution.',lastScheduledRun:scheduled||null,lastRun:latest||null,...snapshot});
 });
 app.post('/api/automation/run-cycle', requireAuth, limited('automation-cycle', 6, 60*60*1000), async (req,res) => {
   if (automationCycleRunning) return res.status(409).json({error:'An automation cycle is already running. Refresh the status in a moment.'});
@@ -870,6 +871,35 @@ app.post('/api/automation/run-cycle', requireAuth, limited('automation-cycle', 6
     res.status(500).json({error:'Automation cycle failed. Check the test service logs.'});
   } finally { automationCycleRunning=false; }
 });
+
+
+let scheduledAgentCycleRunning = false;
+async function runScheduledAgentCycle(trigger='interval') {
+  if (scheduledAgentCycleRunning || !storageReady) return { skipped:true, reason:'busy_or_storage_not_ready' };
+  const previous=(state.automationRuns||[]).find(x=>x.kind==='scheduled_review');
+  const due=!previous || Date.now()-Date.parse(previous.created||0)>=24*60*60*1000;
+  if (!due) return { skipped:true, reason:'not_due' };
+  scheduledAgentCycleRunning=true;
+  try {
+    const snapshot=buildAutomationSnapshot(state);
+    const now=new Date().toISOString();
+    const run={id:crypto.randomUUID(),kind:'scheduled_review',trigger,status:'Completed · scheduled workspace review',created:now,counts:snapshot.counts,modules:Object.keys(snapshot.modules),tasks:snapshot.tasks.slice(0,50),executionMode:'approval_first_internal_only',externalMessagesSent:0,paidActions:0,customerDataShared:0,contentPublished:0};
+    const next=structuredClone(state);
+    next.automationRuns=[run,...(next.automationRuns||[])].slice(0,50);
+    next.activity=[{message:'Scheduled agent review completed '+snapshot.counts.tasks+' internal action items; no external actions taken.',at:now},...(next.activity||[])].slice(0,40);
+    await saveState(next);
+    console.log('Scheduled agent review completed:',JSON.stringify({trigger,runId:run.id,tasks:snapshot.counts.tasks}));
+    return {ok:true,run};
+  } catch(error) {
+    console.error('Scheduled agent review failed:',error.message);
+    return {ok:false,error:error.message};
+  } finally { scheduledAgentCycleRunning=false; }
+}
+function startAgentScheduler() {
+  runScheduledAgentCycle('service_start').catch(error=>console.error('Agent scheduler startup error:',error.message));
+  const timer=setInterval(()=>runScheduledAgentCycle('15_minute_check').catch(error=>console.error('Agent scheduler interval error:',error.message)),15*60*1000);
+  if (typeof timer.unref==='function') timer.unref();
+}
 
 app.post('/api/automation/run', requireAuth, limited('automation', 5, 60 * 60 * 1000), async (req, res) => {
   if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) {
@@ -1017,5 +1047,5 @@ app.get('*', (req, res) => {
   if (!fs.existsSync(file)) return res.status(500).send('Missing public/index.html');
   res.sendFile(file);
 });
-initStorage().then(() => app.listen(PORT, () => console.log('AutoRevenue AI 2.0 listening on port ' + PORT)))
+initStorage().then(() => { app.listen(PORT, () => console.log('AutoRevenue AI 2.0 listening on port ' + PORT)); startAgentScheduler(); })
   .catch(error => { console.error('Startup failed:', error); process.exit(1); });
