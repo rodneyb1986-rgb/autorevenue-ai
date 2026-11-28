@@ -135,17 +135,39 @@ function render(){
 async function handleAction(action){const parts=action.split(':'),kind=parts[0],i=Number(parts[1]);if(kind==='campaign-from-idea'){const idea=state.opportunities.find(x=>String(x.id)===String(parts[1]));if(idea){state.campaigns.unshift({id:Date.now(),name:'Validation: '+idea.title,channel:'Website / blog',goal:'Validate demand for '+idea.offer,duration:(idea.validationDays||14)+' days',plan:'Target customer: '+(idea.customer||'To define')+'\\nProblem: '+(idea.problem||'')+'\\nOffer: '+(idea.offer||'')+'\\nMonetization hypothesis: '+(idea.monetization||'')+'\\nValidation steps: '+(idea.validationSteps||[]).join(' | ')+'\\nMain risk: '+(idea.mainRisk||'')+'\\nAI score: '+(idea.score??'N/A')+'/100; hypothesis only.',status:'Draft · validation required',sourceOpportunityId:idea.id,created:new Date().toISOString()});view('campaigns');}} if(kind==='content-from-campaign'){const campaign=state.campaigns.find(x=>String(x.id)===String(parts[1]));if(campaign){const brief='CAMPAIGN: '+campaign.name+'\\nCHANNEL: '+(campaign.channel||'To decide')+'\\nGOAL: '+(campaign.goal||'')+'\\nAUDIENCE / OFFER / PLAN:\\n'+(campaign.plan||'')+'\\n\\nCreate useful, truthful content that supports this campaign goal. Include a clear call to action, but do not invent product claims, customer results, pricing, or guarantees. Treat this as a draft for human review.';state.content.unshift({id:Date.now(),title:'Content brief: '+campaign.name,type:'Campaign content brief',body:brief,status:'Draft',campaignId:campaign.id,created:new Date().toISOString()});addActivity('Created content brief for '+campaign.name);view('content');}} if(kind==='delete-idea')state.opportunities.splice(i,1);if(kind==='delete-content')state.content.splice(i,1);if(kind==='delete-campaign')state.campaigns.splice(i,1);if(kind==='approve-content'){const x=state.content[i];state.approvals.unshift({id:Date.now(),title:'Content: '+x.title,details:x.body,status:'Pending',created:new Date().toISOString()})}if(kind==='approve-campaign'){const x=state.campaigns[i];state.approvals.unshift({id:Date.now(),title:'Campaign: '+x.name,details:x.plan,status:'Pending',created:new Date().toISOString()})}if(kind==='approve'||kind==='reject'){state.approvals[i].status=kind==='approve'?'Approved':'Rejected';state.approvals[i].decidedAt=new Date().toISOString()}if(kind==='golf-delete'){state.golfOpportunities.splice(i,1)}if(kind==='golf-applied'){state.golfOpportunities[i].status='Application prepared / submitted manually';state.golfOpportunities[i].updatedAt=new Date().toISOString()}addActivity(kind.replaceAll('-',' ')+' updated');try{await save()}catch(e){alert(e.message)}}
 
 $('#run-automation').addEventListener('click',runAutomation);
+$('#run-full-cycle').addEventListener('click',async()=>{
+ const button=$('#run-full-cycle'),out=$('#automation-result');
+ button.disabled=true;out.classList.remove('hidden');out.textContent='Reviewing saved records across all modules…';
+ try{
+  const result=await api('/api/automation/run-cycle',{method:'POST',body:JSON.stringify({})});
+  const counts=result.snapshot&&result.snapshot.counts||{};
+  out.textContent='Full-app review completed. '+Number(counts.tasks||0)+' internal action items created. No external messages, paid actions, customer-data sharing or publishing occurred.';
+  const modules=result.snapshot&&result.snapshot.modules||{};
+  $('#automation-modules').innerHTML=Object.keys(modules).map(key=>'<div class="record"><div><strong>'+esc(key)+'</strong><p>'+esc(modules[key].detail||'')+'</p><small>'+esc(modules[key].status||'ready')+'</small></div></div>').join('');
+  const tasks=result.snapshot&&result.snapshot.tasks||[];
+  $('#automation-tasks').innerHTML='<div class="panel-head subhead"><h3>Action queue · '+tasks.length+'</h3></div>'+tasks.map(task=>'<div class="record"><div><strong>'+esc(task.title)+'</strong><p>'+esc(task.detail)+'</p></div></div>').join('');
+  await loadState();
+ }catch(error){out.textContent=error.message;}
+ finally{button.disabled=false;}
+});
+$('#refresh-automation').addEventListener('click',async()=>{
+ const button=$('#refresh-automation'),out=$('#automation-result');button.disabled=true;
+ try{const result=await api('/api/automation/status');const modules=result.modules||{};$('#automation-modules').innerHTML=Object.keys(modules).map(key=>'<div class="record"><div><strong>'+esc(key)+'</strong><p>'+esc(modules[key].detail||'')+'</p><small>'+esc(modules[key].status||'ready')+'</small></div></div>').join('');out.classList.remove('hidden');out.textContent=result.lastRun?'Last full-app review: '+new Date(result.lastRun.created).toLocaleString():'No full-app review recorded yet.';}
+ catch(error){out.classList.remove('hidden');out.textContent=error.message;}
+ finally{button.disabled=false;}
+});
+
 $('#logout').addEventListener('click',async()=>{try{if(token)await api('/api/logout',{method:'POST'})}catch{}finally{logoutLocal()}});
 
 async function runAutomation(){
  const button=$('#run-automation'), output=$('#automation-result');
- button.disabled=true;button.textContent='Building plan…';output.classList.remove('hidden');output.textContent='AI is preparing an opportunity, campaign and content draft…';
+ button.disabled=true;button.textContent='Generating plan…';output.classList.remove('hidden');output.textContent='AI is preparing an opportunity, campaign and content draft…';
  try{
   const r=await api('/api/automation/run',{method:'POST',body:JSON.stringify({niche:state.settings.niche,strategies:state.settings.strategies})});
   output.textContent='Created: '+r.created.opportunity+' · '+r.created.campaign+' · '+r.created.content+'\\nNo external actions were taken. Drafts are saved for the next step: '+r.nextStep;
   await loadState();
  }catch(e){output.textContent=e.message}
- finally{button.disabled=false;button.textContent='Run automation cycle'}
+ finally{button.disabled=false;button.textContent='Generate growth plan'}
 }
 
 async function generate(type,prompt,niche,target){target.classList.remove('hidden');target.textContent='Working…';try{const r=await api('/api/generate',{method:'POST',body:JSON.stringify({type,prompt,niche})});target.textContent=r.result;return r.result}catch(e){target.textContent=e.message;return ''}}
