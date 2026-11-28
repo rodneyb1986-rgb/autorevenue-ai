@@ -69,3 +69,11 @@ It is not yet ready to be described as a fully autonomous revenue operator. Its 
 - AI endpoints fail closed if PostgreSQL is unavailable, avoiding an unsafe in-memory-only budget counter.
 - Added `node --test` test infrastructure and focused tests for limit parsing, fail-closed behavior, and shared daily-bucket enforcement.
 - This is a request-count safeguard, not a dollar/token spend cap. Dollar-level enforcement remains outstanding.
+
+
+## Stage 1 — Structured agent-plan validation
+
+- Added deterministic validation for AI-generated task plans before persistence.
+- Requires 3–6 steps, explicit `approvalRequired` booleans on every step, bounded text/list sizes, and a 1–14 day integer timebox.
+- Rejects any non-zero plan budget until a separate spending authorization and execution system exists.
+- Added focused unit tests for valid plans, unsafe budgets, missing approval declarations, malformed step counts, timeboxes, and field bounds.
