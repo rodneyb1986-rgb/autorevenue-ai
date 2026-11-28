@@ -758,6 +758,20 @@ function buildAutomationSnapshot(source) {
   for (const order of failedDeliveries.slice(0,50)) tasks.push({type:'delivery_attention', title:'Digital delivery needs attention', detail:'Paid order '+String(order.id||'').slice(0,32)+' · inspect delivery status and use the manual retry control if appropriate.', recordId:order.id, action:'manual_review'});
   for (const approval of pendingApprovals.slice(0,50)) tasks.push({type:'approval', title:'Approval waiting: '+(approval.title||'External action'), detail:'Review and decide in the Approval Queue.', recordId:approval.id, action:'approval_required'});
   for (const lead of unmatchedLeads.slice(0,50)) tasks.push({type:'supplier_match', title:'Review supplier match: '+(lead.name||'Buyer lead'), detail:activeSuppliers.length?'Compare active supplier coverage; sharing still requires buyer consent and your approval.':'Add an appropriate supplier before matching this lead.',recordId:lead.id,action:'manual_review'});
+  const priorityRules = {
+    delivery_attention:{base:95,impact:'Protects a paid customer order',effort:'Low–medium',risk:'Customer-impacting'},
+    approval:{base:75,impact:'Unblocks a pending decision',effort:'Low',risk:'Requires owner decision'},
+    lead_follow_up:{base:65,impact:'May recover a qualified buyer opportunity',effort:'Low',risk:'Requires manual review'},
+    supplier_match:{base:40,impact:'May improve lead fulfilment potential',effort:'Medium',risk:'Buyer consent required before sharing'}
+  };
+  const rankedTasks = tasks.map(task => {
+    const rule = priorityRules[task.type] || {base:30,impact:'Needs review',effort:'Unknown',risk:'Review required'};
+    const lead = task.type==='lead_follow_up' || task.type==='supplier_match' ? leads.find(x=>String(x.id)===String(task.recordId)) : null;
+    const dueTime = lead?.followUpAt ? new Date(lead.followUpAt+'T23:59:59').getTime() : null;
+    const overdueDays = Number.isFinite(dueTime) && dueTime!==null ? Math.max(0,Math.floor((now-dueTime)/86400000)) : 0;
+    const score = Math.min(100,rule.base + Math.min(20,overdueDays*4) + (lead && Number(lead.score)>=80 ? 5 : 0));
+    return {...task,priorityScore:score,priorityBand:score>=85?'Critical':score>=65?'High':score>=45?'Medium':'Low',impact:rule.impact,effort:rule.effort,risk:rule.risk,overdueDays,priorityReason:overdueDays?'Follow-up is '+overdueDays+' day(s) overdue.':rule.impact+'.'};
+  }).sort((x,y)=>y.priorityScore-x.priorityScore);
   return {
     generatedAt:new Date().toISOString(),
     modules:{
@@ -771,7 +785,7 @@ function buildAutomationSnapshot(source) {
       optimization:{status:'ready',items:(source.optimizationReports||[]).length,detail:'Optimization reports remain advisory and rely on recorded data.'},
       approvals:{status:pendingApprovals.length?'attention':'ready',items:pendingApprovals.length,detail:pendingApprovals.length+' decisions waiting.'}
     },
-    tasks:tasks.slice(0,100),
+    tasks:rankedTasks.slice(0,100),
     counts:{tasks:tasks.length,dueLeads:dueLeads.length,failedDeliveries:failedDeliveries.length,pendingApprovals:pendingApprovals.length,unmatchedLeads:unmatchedLeads.length}
   };
 }
