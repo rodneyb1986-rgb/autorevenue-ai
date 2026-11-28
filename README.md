@@ -30,3 +30,12 @@ The app reports missing configuration in its health endpoint without exposing se
 ## Approval model
 
 External integrations and actual posting/affiliate transactions are not enabled in this build. Campaigns and approvals are tracked in the workspace until those integrations are separately configured and explicitly authorized.
+
+
+## AI usage safety limit
+
+- All AI-generation and agent-planning endpoints share a PostgreSQL-backed daily request ceiling.
+- Default: 20 AI requests per rolling 24-hour rate-limit window; configure `AI_MAX_REQUESTS_PER_DAY` with a positive integer (maximum 1,000).
+- AI endpoints fail closed with HTTP 503 when PostgreSQL is unavailable, because an in-memory counter cannot safely enforce a durable shared limit.
+- This is a request-count ceiling, not a guaranteed dollar-denominated cost ceiling. Token-level and dollar-budget enforcement remains a later control.
+- Run `npm test` to execute the built-in Node.js test suite.
