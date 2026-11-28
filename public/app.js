@@ -136,7 +136,7 @@ async function handleAction(action){const parts=action.split(':'),kind=parts[0],
 
 function renderAgentSnapshot(snapshot,lastRun){
  const counts=snapshot?.counts||{},tasks=Array.isArray(snapshot?.tasks)?snapshot.tasks:[];
- const byUrgency=tasks.slice().sort((x,y)=>({approval:0,delivery_attention:1,lead_follow_up:2,supplier_match:3}[x.type]??9)-({approval:0,delivery_attention:1,lead_follow_up:2,supplier_match:3}[y.type]??9));
+ const byUrgency=tasks.slice().sort((x,y)=>(Number(y.priorityScore)||0)-(Number(x.priorityScore)||0));
  const top=byUrgency[0];
  $('#agent-task-count').textContent=Number(counts.tasks||0);
  $('#agent-due-count').textContent=Number(counts.dueLeads||0);
@@ -148,7 +148,7 @@ function renderAgentSnapshot(snapshot,lastRun){
  $('#agent-last-run').textContent=lastRun?.created?'Last review · '+new Date(lastRun.created).toLocaleString():'Status refreshed · '+new Date(snapshot?.generatedAt||Date.now()).toLocaleString();
  $('#agent-priority-title').textContent=top?top.title:'No urgent internal tasks found';
  $('#agent-priority-detail').textContent=top?top.detail:'The current review found no due follow-ups, delivery issues, unmatched leads, or pending approvals. Review opportunities to choose a growth experiment.';
- $('#agent-work-queue').innerHTML=byUrgency.length?byUrgency.slice(0,12).map((task,i)=>'<article class="agent-task"><span class="agent-task-rank">'+(i+1)+'</span><div><strong>'+esc(task.title)+'</strong><p>'+esc(task.detail)+'</p><small>'+esc(String(task.type||'review').replaceAll('_',' '))+'</small></div></article>').join(''):'<div class="empty">No action items found in this review. Check Opportunity Finder for the next growth experiment.</div>';
+ $('#agent-work-queue').innerHTML=byUrgency.length?byUrgency.slice(0,12).map((task,i)=>'<article class="agent-task"><span class="agent-task-rank">'+(i+1)+'</span><div><strong>'+esc(task.title)+'</strong><p>'+esc(task.detail)+'</p><small>'+esc(String(task.type||'review').replaceAll('_',' '))+' · '+esc(task.priorityBand||'Unscored')+' priority ('+(Number(task.priorityScore)||0)+'/100) · Impact: '+esc(task.impact||'To assess')+' · Effort: '+esc(task.effort||'To assess')+' · Risk: '+esc(task.risk||'Review required')+'</small></div></article>').join(''):'<div class="empty">No action items found in this review. Check Opportunity Finder for the next growth experiment.</div>';
 }
 async function refreshAgentStatus(){
  const result=await api('/api/automation/status');
