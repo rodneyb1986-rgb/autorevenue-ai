@@ -751,6 +751,13 @@ function buildAutomationSnapshot(source) {
   const pendingApprovals = approvals.filter(x => x.status === 'Pending');
   const unmatchedLeads = leads.filter(x => !x.matchedSupplierId && !['Converted','Closed'].includes(x.status));
   const activeSuppliers = (source.suppliers || []).filter(x => x.status === 'Active');
+  const income = revenue.filter(x => x.type === 'Income').reduce((n,x)=>n+Math.max(0,Number(x.amount)||0),0);
+  const expenses = revenue.filter(x => x.type === 'Expense').reduce((n,x)=>n+Math.max(0,Number(x.amount)||0),0);
+  const tasks = [];
+  for (const lead of dueLeads.slice(0,50)) tasks.push({type:'lead_follow_up', title:'Buyer follow-up due: '+(lead.name||'New lead'), detail:'Review the buyer request and prepare a response manually.', recordId:lead.id, action:'manual_review'});
+  for (const order of failedDeliveries.slice(0,50)) tasks.push({type:'delivery_attention', title:'Digital delivery needs attention', detail:'Paid order '+String(order.id||'').slice(0,32)+' · inspect delivery status and use the manual retry control if appropriate.', recordId:order.id, action:'manual_review'});
+  for (const approval of pendingApprovals.slice(0,50)) tasks.push({type:'approval', title:'Approval waiting: '+(approval.title||'External action'), detail:'Review and decide in the Approval Queue.', recordId:approval.id, action:'approval_required'});
+  for (const lead of unmatchedLeads.slice(0,50)) tasks.push({type:'supplier_match', title:'Review supplier match: '+(lead.name||'Buyer lead'), detail:activeSuppliers.length?'Compare active supplier coverage; sharing still requires buyer consent and your approval.':'Add an appropriate supplier before matching this lead.',recordId:lead.id,action:'manual_review'});
   const latestOptimization = (Array.isArray(source.optimizationReports) ? source.optimizationReports : []).slice().sort((a,b)=>Date.parse(b.createdAt||0)-Date.parse(a.createdAt||0))[0];
   const savedOpportunities = Array.isArray(source.opportunities) ? source.opportunities : [];
   const campaigns = Array.isArray(source.campaigns) ? source.campaigns : [];
@@ -779,13 +786,6 @@ function buildAutomationSnapshot(source) {
   if (!hasCampaignEvidence) tasks.push({type:'measurement',title:'Instrument the next campaign before launch',
     detail:'Record impressions, clicks, leads, conversions, spend and attributed revenue for any test. Do not infer performance from drafts or plans.',
     action:'measure_campaign',recommendationPriority:'Medium',confidence:'High',effort:'Low',requiresApproval:false});
-  const income = revenue.filter(x => x.type === 'Income').reduce((n,x)=>n+Math.max(0,Number(x.amount)||0),0);
-  const expenses = revenue.filter(x => x.type === 'Expense').reduce((n,x)=>n+Math.max(0,Number(x.amount)||0),0);
-  const tasks = [];
-  for (const lead of dueLeads.slice(0,50)) tasks.push({type:'lead_follow_up', title:'Buyer follow-up due: '+(lead.name||'New lead'), detail:'Review the buyer request and prepare a response manually.', recordId:lead.id, action:'manual_review'});
-  for (const order of failedDeliveries.slice(0,50)) tasks.push({type:'delivery_attention', title:'Digital delivery needs attention', detail:'Paid order '+String(order.id||'').slice(0,32)+' · inspect delivery status and use the manual retry control if appropriate.', recordId:order.id, action:'manual_review'});
-  for (const approval of pendingApprovals.slice(0,50)) tasks.push({type:'approval', title:'Approval waiting: '+(approval.title||'External action'), detail:'Review and decide in the Approval Queue.', recordId:approval.id, action:'approval_required'});
-  for (const lead of unmatchedLeads.slice(0,50)) tasks.push({type:'supplier_match', title:'Review supplier match: '+(lead.name||'Buyer lead'), detail:activeSuppliers.length?'Compare active supplier coverage; sharing still requires buyer consent and your approval.':'Add an appropriate supplier before matching this lead.',recordId:lead.id,action:'manual_review'});
   const priorityRules = {
     delivery_attention:{base:95,impact:'Protects a paid customer order',effort:'Low–medium',risk:'Customer-impacting'},
     approval:{base:75,impact:'Unblocks a pending decision',effort:'Low',risk:'Requires owner decision'},
