@@ -582,7 +582,11 @@ app.post('/api/public/leads', limited('public-lead', 4, 60 * 60 * 1000), async (
     if (!attachment || !timeline || !['Immediately','Within 30 days','1–3 months','Just researching'].includes(timeline)) return res.status(400).json({ error: 'Choose an attachment and purchase timeline.' });
     if (body.consent !== true) return res.status(400).json({ error: 'Consent is required so we can respond to your request.' });
     const score = (phone ? 15 : 0) + (equipment ? 20 : 0) + (model ? 15 : 0) + (timeline === 'Immediately' ? 35 : timeline === 'Within 30 days' ? 25 : timeline === '1–3 months' ? 15 : 5) + (attachment ? 15 : 0);
-    const lead = { id: crypto.randomUUID(), name, email, phone, zip, equipment, model, attachment, timeline, details, source, utmSource, utmMedium, utmCampaign, consent: true, consentText: 'Agreed to be contacted about this request and to have details shared with a matched equipment supplier if one is found.', score, status: score >= 70 ? 'Qualified' : 'New', followUpAt: '', followUpNote: '', referralStatus: 'Unmatched', matchedSupplierId: '', sharingApprovedAt: '', createdAt: new Date().toISOString() };
+    // Schedule an internal reminder only; this never sends an email or shares buyer data.
+    const followUpDate = new Date();
+    followUpDate.setDate(followUpDate.getDate() + (timeline === 'Immediately' ? 0 : timeline === 'Within 30 days' ? 1 : timeline === '1–3 months' ? 3 : 7));
+    const followUpAt = followUpDate.toISOString().slice(0, 10);
+    const lead = { id: crypto.randomUUID(), name, email, phone, zip, equipment, model, attachment, timeline, details, source, utmSource, utmMedium, utmCampaign, consent: true, consentText: 'Agreed to be contacted about this request and to have details shared with a matched equipment supplier if one is found.', score, status: score >= 70 ? 'Qualified' : 'New', followUpAt, followUpNote: '', referralStatus: 'Unmatched', matchedSupplierId: '', sharingApprovedAt: '', createdAt: new Date().toISOString() };
     const next = structuredClone(state);
     next.leads = Array.isArray(next.leads) ? next.leads : [];
     next.leads.unshift(lead);
