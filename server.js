@@ -729,6 +729,66 @@ app.post('/api/opportunities/analyze', requireAuth, limited('opportunity-analysi
   }
 });
 
+
+let automationCycleRunning = false;
+function buildAutomationSnapshot(source) {
+  const now = Date.now();
+  const leads = Array.isArray(source.leads) ? source.leads : [];
+  const orders = Array.isArray(source.orders) ? source.orders : [];
+  const approvals = Array.isArray(source.approvals) ? source.approvals : [];
+  const revenue = Array.isArray(source.revenue) ? source.revenue : [];
+  const dueLeads = leads.filter(x => x.followUpAt && new Date(x.followUpAt + 'T23:59:59').getTime() <= now && !['Converted','Closed'].includes(x.status));
+  const failedDeliveries = orders.filter(x => x.paymentStatus === 'paid' && x.deliveryToken && x.deliveryEmailStatus !== 'sent');
+  const pendingApprovals = approvals.filter(x => x.status === 'Pending');
+  const unmatchedLeads = leads.filter(x => !x.matchedSupplierId && !['Converted','Closed'].includes(x.status));
+  const activeSuppliers = (source.suppliers || []).filter(x => x.status === 'Active');
+  const income = revenue.filter(x => x.type === 'Income').reduce((n,x)=>n+Math.max(0,Number(x.amount)||0),0);
+  const expenses = revenue.filter(x => x.type === 'Expense').reduce((n,x)=>n+Math.max(0,Number(x.amount)||0),0);
+  const tasks = [];
+  for (const lead of dueLeads.slice(0,50)) tasks.push({type:'lead_follow_up', title:'Buyer follow-up due: '+(lead.name||'New lead'), detail:'Review the buyer request and prepare a response manually.', recordId:lead.id, action:'manual_review'});
+  for (const order of failedDeliveries.slice(0,50)) tasks.push({type:'delivery_attention', title:'Digital delivery needs attention', detail:'Paid order '+String(order.id||'').slice(0,32)+' · inspect delivery status and use the manual retry control if appropriate.', recordId:order.id, action:'manual_review'});
+  for (const approval of pendingApprovals.slice(0,50)) tasks.push({type:'approval', title:'Approval waiting: '+(approval.title||'External action'), detail:'Review and decide in the Approval Queue.', recordId:approval.id, action:'approval_required'});
+  for (const lead of unmatchedLeads.slice(0,50)) tasks.push({type:'supplier_match', title:'Review supplier match: '+(lead.name||'Buyer lead'), detail:activeSuppliers.length?'Compare active supplier coverage; sharing still requires buyer consent and your approval.':'Add an appropriate supplier before matching this lead.',recordId:lead.id,action:'manual_review'});
+  return {
+    generatedAt:new Date().toISOString(),
+    modules:{
+      opportunities:{status:'ready',items:(source.opportunities||[]).length,detail:'Saved opportunities available for prioritization.'},
+      content:{status:'ready',items:(source.content||[]).length,detail:'Draft assets are stored; publishing remains a separate authorized action.'},
+      campaigns:{status:'ready',items:(source.campaigns||[]).length,detail:'Campaign plans and entered performance are available for review.'},
+      commerce:{status:'ready',items:orders.length,detail:failedDeliveries.length+' paid digital orders need delivery review.'},
+      buyerLeads:{status:dueLeads.length?'attention':'ready',items:leads.length,due:dueLeads.length,detail:dueLeads.length+' follow-ups due or overdue.'},
+      suppliers:{status:unmatchedLeads.length?'attention':'ready',items:activeSuppliers.length,unmatched:unmatchedLeads.length,detail:'Supplier matching is advisory; external sharing is never automatic.'},
+      revenue:{status:'ready',income:Number(income.toFixed(2)),expenses:Number(expenses.toFixed(2)),net:Number((income-expenses).toFixed(2)),detail:'Totals use saved ledger entries only; projections are excluded.'},
+      optimization:{status:'ready',items:(source.optimizationReports||[]).length,detail:'Optimization reports remain advisory and rely on recorded data.'},
+      approvals:{status:pendingApprovals.length?'attention':'ready',items:pendingApprovals.length,detail:pendingApprovals.length+' decisions waiting.'}
+    },
+    tasks:tasks.slice(0,100),
+    counts:{tasks:tasks.length,dueLeads:dueLeads.length,failedDeliveries:failedDeliveries.length,pendingApprovals:pendingApprovals.length,unmatchedLeads:unmatchedLeads.length}
+  };
+}
+app.get('/api/automation/status', requireAuth, async (req,res) => {
+  const snapshot=buildAutomationSnapshot(state);
+  const latest=(state.automationRuns||[]).find(x=>x.kind==='full_cycle');
+  res.json({ok:true,scheduledExecution:false,lastRun:latest||null,...snapshot});
+});
+app.post('/api/automation/run-cycle', requireAuth, limited('automation-cycle', 6, 60*60*1000), async (req,res) => {
+  if (automationCycleRunning) return res.status(409).json({error:'An automation cycle is already running. Refresh the status in a moment.'});
+  automationCycleRunning=true;
+  try {
+    const snapshot=buildAutomationSnapshot(state);
+    const now=new Date().toISOString();
+    const run={id:crypto.randomUUID(),kind:'full_cycle',status:'Completed · review tasks generated',created:now,counts:snapshot.counts,modules:Object.keys(snapshot.modules),scheduledExecution:false};
+    const next=structuredClone(state);
+    next.automationRuns=[run,...(next.automationRuns||[])].slice(0,50);
+    next.activity=[{message:'Full-app automation cycle reviewed all modules and generated '+snapshot.counts.tasks+' internal action items',at:now},...(next.activity||[])].slice(0,40);
+    await saveState(next);
+    res.json({ok:true,run,snapshot,safety:{externalMessagesSent:0,paidActions:0,customerDataShared:0,contentPublished:0}});
+  } catch(error) {
+    console.error('Full automation cycle failed:',error.message);
+    res.status(500).json({error:'Automation cycle failed. Check the test service logs.'});
+  } finally { automationCycleRunning=false; }
+});
+
 app.post('/api/automation/run', requireAuth, limited('automation', 5, 60 * 60 * 1000), async (req, res) => {
   if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) {
     return res.status(503).json({ error: 'AI is not configured. Check OPENAI_API_KEY and OPENAI_MODEL in Render.' });
