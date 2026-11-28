@@ -221,9 +221,9 @@ async function recordAIUsage(completion, purpose) {
   }
 }
 function clientIp(req) { return req.ip || req.socket.remoteAddress || 'unknown'; }
-function limited(bucket, max, windowMs) {
+function limited(bucket, max, windowMs, options = {}) {
   return async (req, res, next) => {
-    const key = bucket + ':' + clientIp(req), now = Date.now();
+    const key = options.shared ? bucket + ':shared' : bucket + ':' + clientIp(req), now = Date.now();
     try {
       if (pool) {
         const result = await pool.query(
@@ -978,7 +978,7 @@ async function prepareHighestPriorityTaskPlan(tasks) {
   // Enforce a separate durable daily budget bucket for background agent planning.
   const maxRequests=parseDailyLimit(process.env.AI_MAX_REQUESTS_PER_DAY);
   const budget=await pool.query(
-    "INSERT INTO autorevenue_ai_rate_limits (bucket_key, hit_count, reset_at) VALUES ('ai-daily-budget:agent-scheduler', 1, now() + ($1 * interval '1 millisecond')) ON CONFLICT (bucket_key) DO UPDATE SET hit_count = CASE WHEN autorevenue_ai_rate_limits.reset_at <= now() THEN 1 ELSE autorevenue_ai_rate_limits.hit_count + 1 END, reset_at = CASE WHEN autorevenue_ai_rate_limits.reset_at <= now() THEN now() + ($1 * interval '1 millisecond') ELSE autorevenue_ai_rate_limits.reset_at END RETURNING hit_count",
+    "INSERT INTO autorevenue_ai_rate_limits (bucket_key, hit_count, reset_at) VALUES ('ai-daily-budget:shared', 1, now() + ($1 * interval '1 millisecond')) ON CONFLICT (bucket_key) DO UPDATE SET hit_count = CASE WHEN autorevenue_ai_rate_limits.reset_at <= now() THEN 1 ELSE autorevenue_ai_rate_limits.hit_count + 1 END, reset_at = CASE WHEN autorevenue_ai_rate_limits.reset_at <= now() THEN now() + ($1 * interval '1 millisecond') ELSE autorevenue_ai_rate_limits.reset_at END RETURNING hit_count",
     [DAY_MS]
   );
   if (Number(budget.rows[0]?.hit_count||0)>maxRequests) return { prepared:false, reason:'daily_ai_request_limit_reached' };
