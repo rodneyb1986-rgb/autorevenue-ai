@@ -722,7 +722,7 @@ app.post('/api/experiments/build', requireAuth, limited('experiment-build', 5, 6
   } catch(error){console.error('Experiment planning failed:',error.message);const timedOut=/timeout|timed out/i.test(error.message||'');res.status(timedOut?504:502).json({error:timedOut?'The AI request took too long. Try Build 7-day experiment again; no experiment or campaign was saved.':'Could not build the experiment: '+String(error.message||'Unknown error').slice(0,220)});}
 });
 
-app.post('/api/opportunities/analyze', requireAuth, limited('opportunity-analysis', 8, 60 * 60 * 1000), async (req, res) => {
+app.post('/api/opportunities/analyze', requireAuth, limited('opportunity-analysis', 8, 60 * 60 * 1000), aiDailyBudget, async (req, res) => {
   if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) return res.status(503).json({ error: 'AI is not configured. Check OPENAI_API_KEY and OPENAI_MODEL in Render.' });
   const niche = String(req.body?.niche || state.settings.niche || '').trim().slice(0, 160);
   const focus = String(req.body?.focus || '').trim().slice(0, 1200);
@@ -978,7 +978,7 @@ function startAgentScheduler() {
   if (typeof timer.unref==='function') timer.unref();
 }
 
-app.post('/api/automation/run', requireAuth, limited('automation', 5, 60 * 60 * 1000), async (req, res) => {
+app.post('/api/automation/run', requireAuth, limited('automation', 5, 60 * 60 * 1000), aiDailyBudget, async (req, res) => {
   if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) {
     return res.status(503).json({ error: 'AI is not configured. Check OPENAI_API_KEY and OPENAI_MODEL in Render.' });
   }
