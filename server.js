@@ -897,7 +897,7 @@ app.post('/api/agent/tasks/:id/plan',requireAuth,limited('agent-task-plan',10,60
   try{
     const OpenAI=require('openai'),client=new OpenAI({apiKey:process.env.OPENAI_API_KEY,timeout:90000});
     const system='You are AutoRevenue AI, an approval-first operations planner. Return only valid JSON. Build a practical, low-cost internal work plan for the task. Do not invent facts, market research, prices, customer demand, or results. Separate assumptions from known task details. Default to $0 spend and no external contact or publication. Any step involving money, publishing, outreach, sharing data, or purchases must be marked approvalRequired=true and must not be executed.';
-    const prompt='Create a focused work plan for this saved task. Task title: '+task.title+'. Details: '+task.detail+'. Type: '+task.type+'. Return JSON with exactly: objective (string), assumptions (array of strings), steps (array of 3-6 objects with step, ownerAction, successCheck, approvalRequired boolean), successMetric (string), target (string), budgetCapUsd (number; default 0), timeboxDays (integer 1-14), risks (array of strings), nextAction (string). Use measurable criteria where possible, but do not invent baseline data. Make the first action achievable without spending money or contacting anyone.';
+    const prompt='Create a focused work plan for this saved task. Task title: '+task.title+'. Details: '+task.detail+'. Type: '+task.type+'. Return JSON with exactly: operation (string; must be review_workspace_evidence), objective (string), assumptions (array of strings), steps (array of 3-6 objects with step, ownerAction, successCheck, approvalRequired boolean), successMetric (string), target (string), budgetCapUsd (number; default 0), timeboxDays (integer 1-14), risks (array of strings), nextAction (string). Use measurable criteria where possible, but do not invent baseline data. Make the first action achievable without spending money or contacting anyone.';
     const completion=await client.chat.completions.create({model:process.env.OPENAI_MODEL,messages:[{role:'system',content:system},{role:'user',content:prompt}],max_completion_tokens:1400});
     let raw=completion.choices?.[0]?.message?.content?.trim()||'';
     raw=raw.replace(/^\`\`\`(?:json)?\s*/i,'').replace(/\s*\`\`\`$/,'');
@@ -954,9 +954,11 @@ app.post('/api/automation/run-cycle', requireAuth, limited('automation-cycle', 6
     await saveState(next);
     const planning=await prepareHighestPriorityTaskPlan(state.agentTasks||[]).catch(error=>{console.error('Agent task planning failed:',error.message);return {prepared:false,reason:'planning_error'};});
     run.taskPlanning=planning;
+    const execution=await executeSafeInternalTaskPlan().catch(error=>{console.error('Safe internal task execution failed:',error.message);return {executed:false,reason:'execution_error'};});
+    run.taskExecution=execution;
     const finalState=structuredClone(state);
     finalState.automationRuns=[run,...(finalState.automationRuns||[])].slice(0,50);
-    finalState.activity=[{message:'Full-app automation cycle reviewed all modules and generated '+snapshot.counts.tasks+' internal action items; '+(planning.prepared?'prepared a no-spend plan for the highest-priority task':'no task plan prepared')+'; no external actions taken.',at:now},...(finalState.activity||[])].slice(0,40);
+    finalState.activity=[{message:'Full-app automation cycle reviewed all modules and generated '+snapshot.counts.tasks+' internal action items; '+(planning.prepared?'prepared a no-spend plan for the highest-priority task':'no task plan prepared')+'; '+(execution.executed?'verified a safe internal evidence brief':'no safe internal operation executed')+'; no external actions taken.',at:now},...(finalState.activity||[])].slice(0,40);
     await saveState(finalState);
     res.json({ok:true,run,snapshot,safety:{externalMessagesSent:0,paidActions:0,customerDataShared:0,contentPublished:0}});
   } catch(error) {
@@ -985,7 +987,7 @@ async function prepareHighestPriorityTaskPlan(tasks) {
 
   const OpenAI=require('openai'),client=new OpenAI({apiKey:process.env.OPENAI_API_KEY,timeout:90000});
   const system='You are AutoRevenue AI, an approval-first operations planner. Return only valid JSON. Create a practical, low-cost internal work plan. Do not invent facts, market research, prices, customer demand, or results. Default to $0 spend and no external contact or publication. Any step involving money, publishing, outreach, sharing data, or purchases must be marked approvalRequired=true and must not be executed.';
-  const prompt='Prepare a work plan for this highest-priority saved task. Title: '+task.title+'. Details: '+task.detail+'. Type: '+task.type+'. Return JSON with exactly: objective (string), assumptions (array of strings), steps (array of 3-6 objects with step, ownerAction, successCheck, approvalRequired boolean), successMetric (string), target (string), budgetCapUsd (number; must be 0), timeboxDays (integer 1-14), risks (array of strings), nextAction (string). First action must be achievable without spending money or contacting anyone.';
+  const prompt='Prepare a work plan for this highest-priority saved task. Title: '+task.title+'. Details: '+task.detail+'. Type: '+task.type+'. Return JSON with exactly: operation (string; must be review_workspace_evidence), objective (string), assumptions (array of strings), steps (array of 3-6 objects with step, ownerAction, successCheck, approvalRequired boolean), successMetric (string), target (string), budgetCapUsd (number; must be 0), timeboxDays (integer 1-14), risks (array of strings), nextAction (string). First action must be achievable without spending money or contacting anyone.';
   const completion=await client.chat.completions.create({model:process.env.OPENAI_MODEL,messages:[{role:'system',content:system},{role:'user',content:prompt}],max_completion_tokens:1400});
   let raw=completion.choices?.[0]?.message?.content?.trim()||'';
   raw=raw.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
@@ -999,6 +1001,61 @@ async function prepareHighestPriorityTaskPlan(tasks) {
   await saveState(next);
   await recordAIUsage(completion,'Scheduled agent task plan');
   return {prepared:true,taskId:saved.id,title:saved.title};
+}
+
+
+async function executeSafeInternalTaskPlan() {
+  const eligible = (state.agentTasks || [])
+    .filter(task => task.plan?.operation === 'review_workspace_evidence'
+      && ['New', 'In progress'].includes(task.status)
+      && ['revenue_experiment', 'measurement'].includes(task.type)
+      && !task.executionBrief)
+    .sort((a,b)=>(Number(b.priorityScore)||0)-(Number(a.priorityScore)||0))[0];
+  if (!eligible) return { executed:false, reason:'no_eligible_safe_internal_operation' };
+
+  // This operation only computes aggregates from existing workspace records.
+  // It never reads lead contact details or sends/publishes/shares anything.
+  const revenue = Array.isArray(state.revenue) ? state.revenue : [];
+  const manual = revenue.filter(row => !row.checkoutSessionId && !/^Stripe sale:/i.test(String(row.source || '')));
+  const sum = type => Number(manual.filter(row => row.type === type)
+    .reduce((total,row)=>total+Math.max(0,Number(row.amount)||0),0).toFixed(2));
+  const brief = {
+    operation:'review_workspace_evidence',
+    taskId:eligible.id,
+    taskType:eligible.type,
+    workspaceEvidence:{
+      opportunitiesSaved:(state.opportunities||[]).length,
+      campaignsSaved:(state.campaigns||[]).length,
+      contentDraftsSaved:(state.content||[]).length,
+      manualLedgerEntries:manual.length,
+      recordedIncomeUsd:sum('Income'),
+      recordedExpensesUsd:sum('Expense'),
+      recordedNetUsd:Number((sum('Income')-sum('Expense')).toFixed(2)),
+      paidOrders:(state.orders||[]).filter(order=>order.paymentStatus==='paid').length
+    },
+    findings:[
+      'Counts and ledger totals are calculated from records currently saved in this workspace.',
+      'Recorded ledger amounts are not a forecast and do not establish future sales or profitability.',
+      'No customer contact, publication, purchase, paid action, or external data sharing was performed.'
+    ],
+    nextOwnerAction:'Review the evidence and decide whether to continue with the task.',
+    createdAt:new Date().toISOString()
+  };
+  const next=structuredClone(state);
+  const task=(next.agentTasks||[]).find(item=>item.id===eligible.id);
+  if (!task || task.executionBrief || !['New','In progress'].includes(task.status)) {
+    return {executed:false,reason:'task_changed_before_execution'};
+  }
+  task.executionBrief=brief;
+  task.status='In progress';
+  task.updatedAt=brief.createdAt;
+  task.executionLog=[{at:brief.createdAt,event:'safe_internal_operation_executed',status:task.status,note:'Generated a workspace evidence brief from saved aggregate records; no external action taken.'},...(task.executionLog||[])].slice(0,50);
+  await saveState(next);
+  const verified=(state.agentTasks||[]).find(item=>item.id===eligible.id);
+  const verifiedOk=Boolean(verified?.executionBrief?.createdAt===brief.createdAt
+    && verified.executionBrief.operation==='review_workspace_evidence');
+  if (!verifiedOk) throw new Error('Internal operation verification failed after save.');
+  return {executed:true,verified:true,taskId:eligible.id,operation:brief.operation};
 }
 
 let scheduledAgentCycleRunning = false;
