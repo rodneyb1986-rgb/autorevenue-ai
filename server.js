@@ -20,6 +20,9 @@ const DEFAULT_STATE = {
   activity: []
 };
 app.disable('x-powered-by');
+// Render terminates TLS at its edge proxy. Trust only the nearest proxy hop so req.ip
+// resolves the actual client address without trusting user-supplied leftmost XFF values.
+app.set('trust proxy', 1);
 app.use(helmet({ contentSecurityPolicy: false }));
 // Stripe webhooks require the unmodified request body for signature verification.
 app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
@@ -199,7 +202,7 @@ async function recordAIUsage(completion, purpose) {
     console.error('AI usage tracking failed:', error.message);
   }
 }
-function clientIp(req) { return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown'; }
+function clientIp(req) { return req.ip || req.socket.remoteAddress || 'unknown'; }
 function limited(bucket, max, windowMs) {
   return async (req, res, next) => {
     const key = bucket + ':' + clientIp(req), now = Date.now();
