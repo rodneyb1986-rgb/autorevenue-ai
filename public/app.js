@@ -167,6 +167,7 @@ function renderAgentSnapshot(snapshot,lastRun){
  $('#agent-state').textContent=tasks.length?'ATTENTION REQUIRED':'REVIEW COMPLETE';
  $('#agent-state').className='agent-state '+(tasks.length?'attention':'ready');
  $('#agent-last-run').textContent=lastRun?.created?'Last review · '+new Date(lastRun.created).toLocaleString():'Status refreshed · '+new Date(snapshot?.generatedAt||Date.now()).toLocaleString();
+ $('#agent-schedule-status').textContent=snapshot?.scheduledExecution?'Daily review enabled · checks every 15 minutes while service is awake':'Automatic daily review not enabled';
  $('#agent-priority-title').textContent=top?top.title:'No urgent internal tasks found';
  $('#agent-priority-detail').textContent=top?top.detail:'The current review found no due follow-ups, delivery issues, unmatched leads, or pending approvals. Review opportunities to choose a growth experiment.';
  $('#agent-work-queue').innerHTML=byUrgency.length?byUrgency.slice(0,12).map((task,i)=>'<article class="agent-task"><span class="agent-task-rank">'+(i+1)+'</span><div><strong>'+esc(task.title)+'</strong><p>'+esc(task.detail)+'</p><small>'+esc(String(task.type||'review').replaceAll('_',' '))+' · '+esc(task.priorityBand||'Unscored')+' priority ('+(Number(task.priorityScore)||0)+'/100) · Impact: '+esc(task.impact||'To assess')+' · Effort: '+esc(task.effort||'To assess')+' · Risk: '+esc(task.risk||'Review required')+'</small></div></article>').join(''):'<div class="empty">No action items found in this review. Check Opportunity Finder for the next growth experiment.</div>';
