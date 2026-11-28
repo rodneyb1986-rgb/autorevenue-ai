@@ -97,6 +97,7 @@ let state = structuredClone(DEFAULT_STATE);
 const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'agentTasks', 'aiUsage', 'optimizationReports', 'golfOpportunities', 'products', 'orders', 'subscriptions', 'leads', 'suppliers', 'activity'];
 const ALLOWED_STRATEGIES = ['affiliate', 'digital-products', 'lead-generation', 'content', 'services'];
 const { createDailyBudgetGuard } = require('./lib/ai-budget');
+const { validateAgentPlan } = require('./lib/agent-plan');
 const aiDailyBudget = createDailyBudgetGuard({
   getPool: () => pool,
   getLimiter: limited,
@@ -890,9 +891,9 @@ app.post('/api/agent/tasks/:id/plan',requireAuth,limited('agent-task-plan',10,60
     let raw=completion.choices?.[0]?.message?.content?.trim()||'';
     raw=raw.replace(/^\`\`\`(?:json)?\s*/i,'').replace(/\s*\`\`\`$/,'');
     const plan=JSON.parse(raw);
-    if(typeof plan.objective!=='string'||!Array.isArray(plan.steps)||!plan.steps.length||typeof plan.successMetric!=='string'||typeof plan.target!=='string')throw new Error('Planner returned an incomplete work plan.');
+    const validatedPlan=validateAgentPlan(plan);
     const next=structuredClone(state),saved=next.agentTasks.find(x=>x.id===req.params.id),now=new Date().toISOString();
-    saved.plan={objective:plan.objective.slice(0,1000),assumptions:(plan.assumptions||[]).slice(0,8),steps:plan.steps.slice(0,8),successMetric:plan.successMetric.slice(0,300),target:plan.target.slice(0,300),budgetCapUsd:Math.max(0,Number(plan.budgetCapUsd)||0),timeboxDays:Math.max(1,Math.min(14,Number(plan.timeboxDays)||7)),risks:(plan.risks||[]).slice(0,8),nextAction:String(plan.nextAction||'Review the first step').slice(0,500),createdAt:now};
+    saved.plan={...validatedPlan,createdAt:now};
     saved.updatedAt=now;saved.executionLog=[{at:now,event:'plan_created',status:saved.status,note:'Internal work plan generated; no external actions taken.'},...(saved.executionLog||[])].slice(0,50);
     await saveState(next);await recordAIUsage(completion,'Agent task work plan');
     res.json({ok:true,task:saved});
