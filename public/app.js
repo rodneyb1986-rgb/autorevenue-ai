@@ -186,12 +186,33 @@ async function refreshPersistentAgentTasks(){
  if(!target)return;
  target.innerHTML='<div class="agent-queue-summary">'+summary.new+' new · '+summary.inProgress+' in progress · '+summary.blocked+' blocked · '+summary.completed+' completed</div>'+
  (tasks.length?tasks.slice(0,30).map((task,i)=>'<article class="agent-task"><span class="agent-task-rank">'+(i+1)+'</span><div><strong>'+esc(task.title)+'</strong><p>'+esc(task.detail)+'</p><small>'+esc(task.type.replaceAll('_',' '))+' · '+esc(task.priorityBand)+' priority ('+(Number(task.priorityScore)||0)+'/100) · '+esc(task.status)+' · Seen '+Number(task.occurrences||1)+' time(s)</small>'+
- '<div class="button-row">'+(task.status!=='In progress'?'<button class="mini" data-agent-task-status="In progress" data-agent-task-id="'+esc(task.id)+'">Start</button>':'')+
+ '<div class="button-row"><button class="mini" data-agent-plan="'+esc(task.id)+'">Build work plan</button><button class="mini secondary" data-agent-result="'+esc(task.id)+'">Record result</button>'+
+ (task.status!=='In progress'?'<button class="mini" data-agent-task-status="In progress" data-agent-task-id="'+esc(task.id)+'">Start</button>':'')+
  (task.status!=='Blocked'?'<button class="mini secondary" data-agent-task-status="Blocked" data-agent-task-id="'+esc(task.id)+'">Block</button>':'')+
  (task.status!=='Dismissed'?'<button class="mini secondary" data-agent-task-status="Dismissed" data-agent-task-id="'+esc(task.id)+'">Dismiss</button>':'')+'</div>'+
+ (task.plan?'<div class="agent-task-plan"><strong>Work plan · '+esc(task.plan.timeboxDays)+' days · Budget cap '+money(task.plan.budgetCapUsd)+'</strong><p>'+esc(task.plan.objective)+'</p><p><b>Success measure:</b> '+esc(task.plan.successMetric)+' · <b>Target:</b> '+esc(task.plan.target)+'</p><ol>'+task.plan.steps.map(step=>'<li>'+esc(step.step)+' — '+esc(step.ownerAction)+' <small>Check: '+esc(step.successCheck)+(step.approvalRequired?' · Approval required':'')+'</small></li>').join('')+'</ol><p><b>Next action:</b> '+esc(task.plan.nextAction)+'</p></div>':'')+
+ (task.result?'<small>Recorded result: '+esc(task.result.outcome)+' · '+(task.result.ownerConfirmed?'Owner confirmed complete':'Not marked complete')+'</small>':'')+
  (task.executionLog||[]).slice(0,2).map(log=>'<small>'+esc(log.status||log.event)+' · '+esc(new Date(log.at).toLocaleString())+(log.note?' · '+esc(log.note):'')+'</small>').join('')+'</div></article>').join(''):'<div class="empty">No persistent agent tasks yet. Run an agent review to build the queue.</div>');
 }
 $('#agent-work-queue').addEventListener('click',async e=>{
+ const planButton=e.target.closest('[data-agent-plan]');
+ if(planButton){
+  planButton.disabled=true;planButton.textContent='Planning…';
+  try{await api('/api/agent/tasks/'+encodeURIComponent(planButton.dataset.agentPlan)+'/plan',{method:'POST',body:JSON.stringify({})});await refreshPersistentAgentTasks();}
+  catch(error){alert(error.message);planButton.disabled=false;planButton.textContent='Build work plan';}
+  return;
+ }
+ const resultButton=e.target.closest('[data-agent-result]');
+ if(resultButton){
+  const outcome=prompt('What actually happened? Include the result and evidence.');
+  if(!outcome||!outcome.trim())return;
+  const actual=prompt('Actual measurement (optional, e.g. 3 registrations, $0 spent):')||'';
+  const ownerConfirmed=confirm('Confirm that the planned work is actually complete and the result has been checked? Choose Cancel if it is only partial progress.');
+  resultButton.disabled=true;
+  try{await api('/api/agent/tasks/'+encodeURIComponent(resultButton.dataset.agentResult)+'/result',{method:'POST',body:JSON.stringify({outcome,actual,ownerConfirmed})});await refreshPersistentAgentTasks();}
+  catch(error){alert(error.message);resultButton.disabled=false;}
+  return;
+ }
  const button=e.target.closest('[data-agent-task-status]');
  if(!button)return;
  button.disabled=true;
