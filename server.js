@@ -975,10 +975,10 @@ async function prepareHighestPriorityTaskPlan(tasks) {
     .sort((a,b)=>(Number(b.priorityScore)||0)-(Number(a.priorityScore)||0))[0];
   if (!task) return { prepared:false, reason:'no_unplanned_eligible_task' };
 
-  // Share the same durable daily AI budget bucket used by authenticated AI endpoints.
+  // Enforce a separate durable daily budget bucket for background agent planning.
   const maxRequests=parseDailyLimit(process.env.AI_MAX_REQUESTS_PER_DAY);
   const budget=await pool.query(
-    "INSERT INTO autorevenue_ai_rate_limits (bucket_key, hit_count, reset_at) VALUES ('ai-daily-budget:127.0.0.1', 1, now() + ($1 * interval '1 millisecond')) ON CONFLICT (bucket_key) DO UPDATE SET hit_count = CASE WHEN autorevenue_ai_rate_limits.reset_at <= now() THEN 1 ELSE autorevenue_ai_rate_limits.hit_count + 1 END, reset_at = CASE WHEN autorevenue_ai_rate_limits.reset_at <= now() THEN now() + ($1 * interval '1 millisecond') ELSE autorevenue_ai_rate_limits.reset_at END RETURNING hit_count",
+    "INSERT INTO autorevenue_ai_rate_limits (bucket_key, hit_count, reset_at) VALUES ('ai-daily-budget:agent-scheduler', 1, now() + ($1 * interval '1 millisecond')) ON CONFLICT (bucket_key) DO UPDATE SET hit_count = CASE WHEN autorevenue_ai_rate_limits.reset_at <= now() THEN 1 ELSE autorevenue_ai_rate_limits.hit_count + 1 END, reset_at = CASE WHEN autorevenue_ai_rate_limits.reset_at <= now() THEN now() + ($1 * interval '1 millisecond') ELSE autorevenue_ai_rate_limits.reset_at END RETURNING hit_count",
     [DAY_MS]
   );
   if (Number(budget.rows[0]?.hit_count||0)>maxRequests) return { prepared:false, reason:'daily_ai_request_limit_reached' };
