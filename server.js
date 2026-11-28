@@ -150,6 +150,13 @@ async function initStorage() {
     await pool.query('CREATE TABLE IF NOT EXISTS autorevenue_ai_sessions (token_hash text PRIMARY KEY, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now())');
     await pool.query('CREATE TABLE IF NOT EXISTS autorevenue_ai_rate_limits (bucket_key text PRIMARY KEY, hit_count integer NOT NULL, reset_at timestamptz NOT NULL)');
     await pool.query('CREATE TABLE IF NOT EXISTS autorevenue_ai_backups (id bigserial PRIMARY KEY, payload jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now())');
+    await pool.query('CREATE TABLE IF NOT EXISTS autorevenue_ai_persistence_probe (id integer PRIMARY KEY CHECK (id = 1), startup_id text NOT NULL, previous_startup_id text, verified_at timestamptz NOT NULL DEFAULT now())');
+    const previousProbe = await pool.query('SELECT startup_id FROM autorevenue_ai_persistence_probe WHERE id = 1');
+    const startupId = crypto.randomUUID();
+    await pool.query('INSERT INTO autorevenue_ai_persistence_probe (id, startup_id, previous_startup_id, verified_at) VALUES (1, $1, $2, now()) ON CONFLICT (id) DO UPDATE SET previous_startup_id = autorevenue_ai_persistence_probe.startup_id, startup_id = EXCLUDED.startup_id, verified_at = now()', [startupId, previousProbe.rows[0]?.startup_id || null]);
+    const probeCheck = await pool.query('SELECT startup_id, previous_startup_id FROM autorevenue_ai_persistence_probe WHERE id = 1');
+    if (probeCheck.rows[0]?.startup_id !== startupId) throw new Error('PostgreSQL persistence probe read-back failed.');
+    console.log(previousProbe.rows[0] ? 'PostgreSQL persistence probe passed: prior startup marker survived restart; current write/read verified.' : 'PostgreSQL persistence probe passed: initial write/read verified; restart verification will occur on next startup.');
     const result = await pool.query('SELECT payload FROM autorevenue_ai_state WHERE id = 1');
     if (result.rows[0]) state = cleanState(result.rows[0].payload);
     else {
