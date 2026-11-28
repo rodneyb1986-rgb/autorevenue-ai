@@ -96,7 +96,7 @@ let pool = null;
 let state = structuredClone(DEFAULT_STATE);
 const STATE_LISTS = ['opportunities', 'campaigns', 'content', 'revenue', 'approvals', 'automationRuns', 'agentTasks', 'aiUsage', 'optimizationReports', 'golfOpportunities', 'products', 'orders', 'subscriptions', 'leads', 'suppliers', 'activity'];
 const ALLOWED_STRATEGIES = ['affiliate', 'digital-products', 'lead-generation', 'content', 'services'];
-const { createDailyBudgetGuard } = require('./lib/ai-budget');
+const { createDailyBudgetGuard, parseDailyLimit, DAY_MS } = require('./lib/ai-budget');
 const { validateAgentPlan } = require('./lib/agent-plan');
 const aiDailyBudget = createDailyBudgetGuard({
   getPool: () => pool,
@@ -951,7 +951,11 @@ app.post('/api/automation/run-cycle', requireAuth, limited('automation-cycle', 6
     const now=new Date().toISOString();
     const run={id:crypto.randomUUID(),kind:'full_cycle',status:'Completed · review tasks generated',created:now,counts:snapshot.counts,modules:Object.keys(snapshot.modules),scheduledExecution:false};
     const next=syncPersistentAgentTasks(snapshot,structuredClone(state));
-    next.automationRuns=[run,...(next.automationRuns||[])].slice(0,50);
+    await saveState(next);
+    const planning=await prepareHighestPriorityTaskPlan(state.agentTasks||[]).catch(error=>{console.error('Scheduled task planning failed:',error.message);return {prepared:false,reason:'planning_error'};});
+    run.taskPlanning=planning;
+    const finalState=structuredClone(state);
+    finalState.automationRuns=[run,...(finalState.automationRuns||[])].slice(0,50);
     next.activity=[{message:'Full-app automation cycle reviewed all modules and generated '+snapshot.counts.tasks+' internal action items',at:now},...(next.activity||[])].slice(0,40);
     await saveState(next);
     res.json({ok:true,run,snapshot,safety:{externalMessagesSent:0,paidActions:0,customerDataShared:0,contentPublished:0}});
@@ -961,6 +965,41 @@ app.post('/api/automation/run-cycle', requireAuth, limited('automation-cycle', 6
   } finally { automationCycleRunning=false; }
 });
 
+
+async function prepareHighestPriorityTaskPlan(tasks) {
+  if (!pool || !process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) {
+    return { prepared:false, reason:'ai_or_persistent_storage_not_configured' };
+  }
+  const task=[...(tasks||[])]
+    .filter(item=>!item.plan && ['New','In progress'].includes(item.status))
+    .sort((a,b)=>(Number(b.priorityScore)||0)-(Number(a.priorityScore)||0))[0];
+  if (!task) return { prepared:false, reason:'no_unplanned_eligible_task' };
+
+  // Share the same durable daily AI budget bucket used by authenticated AI endpoints.
+  const maxRequests=parseDailyLimit(process.env.AI_MAX_REQUESTS_PER_DAY);
+  const budget=await pool.query(
+    "INSERT INTO autorevenue_ai_rate_limits (bucket_key, hit_count, reset_at) VALUES ('ai-daily-budget:127.0.0.1', 1, now() + ($1 * interval '1 millisecond')) ON CONFLICT (bucket_key) DO UPDATE SET hit_count = CASE WHEN autorevenue_ai_rate_limits.reset_at <= now() THEN 1 ELSE autorevenue_ai_rate_limits.hit_count + 1 END, reset_at = CASE WHEN autorevenue_ai_rate_limits.reset_at <= now() THEN now() + ($1 * interval '1 millisecond') ELSE autorevenue_ai_rate_limits.reset_at END RETURNING hit_count",
+    [DAY_MS]
+  );
+  if (Number(budget.rows[0]?.hit_count||0)>maxRequests) return { prepared:false, reason:'daily_ai_request_limit_reached' };
+
+  const OpenAI=require('openai'),client=new OpenAI({apiKey:process.env.OPENAI_API_KEY,timeout:90000});
+  const system='You are AutoRevenue AI, an approval-first operations planner. Return only valid JSON. Create a practical, low-cost internal work plan. Do not invent facts, market research, prices, customer demand, or results. Default to $0 spend and no external contact or publication. Any step involving money, publishing, outreach, sharing data, or purchases must be marked approvalRequired=true and must not be executed.';
+  const prompt='Prepare a work plan for this highest-priority saved task. Title: '+task.title+'. Details: '+task.detail+'. Type: '+task.type+'. Return JSON with exactly: objective (string), assumptions (array of strings), steps (array of 3-6 objects with step, ownerAction, successCheck, approvalRequired boolean), successMetric (string), target (string), budgetCapUsd (number; must be 0), timeboxDays (integer 1-14), risks (array of strings), nextAction (string). First action must be achievable without spending money or contacting anyone.';
+  const completion=await client.chat.completions.create({model:process.env.OPENAI_MODEL,messages:[{role:'system',content:system},{role:'user',content:prompt}],max_completion_tokens:1400});
+  let raw=completion.choices?.[0]?.message?.content?.trim()||'';
+  raw=raw.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
+  const plan=validateAgentPlan(JSON.parse(raw));
+  const next=structuredClone(state),saved=(next.agentTasks||[]).find(item=>item.id===task.id);
+  if (!saved || saved.plan || !['New','In progress'].includes(saved.status)) return { prepared:false, reason:'task_changed_before_plan_save' };
+  const now=new Date().toISOString();
+  saved.plan={...plan,createdAt:now,generatedBy:'scheduled_agent'};
+  saved.updatedAt=now;
+  saved.executionLog=[{at:now,event:'autonomous_plan_prepared',status:saved.status,note:'Agent prepared a no-spend internal plan. No external action was taken.'},...(saved.executionLog||[])].slice(0,50);
+  await saveState(next);
+  await recordAIUsage(completion,'Scheduled agent task plan');
+  return {prepared:true,taskId:saved.id,title:saved.title};
+}
 
 let scheduledAgentCycleRunning = false;
 async function runScheduledAgentCycle(trigger='interval') {
@@ -975,9 +1014,9 @@ async function runScheduledAgentCycle(trigger='interval') {
     const run={id:crypto.randomUUID(),kind:'scheduled_review',trigger,status:'Completed · scheduled workspace review',created:now,counts:snapshot.counts,modules:Object.keys(snapshot.modules),tasks:snapshot.tasks.slice(0,50),executionMode:'approval_first_internal_only',externalMessagesSent:0,paidActions:0,customerDataShared:0,contentPublished:0};
     const next=syncPersistentAgentTasks(snapshot,structuredClone(state));
     next.automationRuns=[run,...(next.automationRuns||[])].slice(0,50);
-    next.activity=[{message:'Scheduled agent review completed '+snapshot.counts.tasks+' internal action items; no external actions taken.',at:now},...(next.activity||[])].slice(0,40);
-    await saveState(next);
-    console.log('Scheduled agent review completed:',JSON.stringify({trigger,runId:run.id,tasks:snapshot.counts.tasks}));
+    finalState.activity=[{message:'Scheduled agent review completed '+snapshot.counts.tasks+' internal action items; '+(planning.prepared?'prepared a work plan for the highest-priority task':'no task plan prepared')+'; no external actions taken.',at:now},...(finalState.activity||[])].slice(0,40);
+    await saveState(finalState);
+    console.log('Scheduled agent review completed:',JSON.stringify({trigger,runId:run.id,tasks:snapshot.counts.tasks,taskPlanning:planning}));
     return {ok:true,run};
   } catch(error) {
     console.error('Scheduled agent review failed:',error.message);
