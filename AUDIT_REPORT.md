@@ -60,3 +60,12 @@ It is not yet ready to be described as a fully autonomous revenue operator. Its 
 6. Add a reliable scheduled worker only after its hosting cost is approved.
 
 **Safety boundary:** No spending, customer outreach, publication, production deployment, or production data changes were performed as part of this audit.
+
+
+## Stage 1 implementation update
+
+- Added a shared PostgreSQL-backed daily AI request ceiling to the AI connection test, content generation, experiment builder, and agent task planning routes.
+- Default ceiling is 20 requests per 24-hour window; `AI_MAX_REQUESTS_PER_DAY` can lower or raise it up to 1,000.
+- AI endpoints fail closed if PostgreSQL is unavailable, avoiding an unsafe in-memory-only budget counter.
+- Added `node --test` test infrastructure and focused tests for limit parsing, fail-closed behavior, and shared daily-bucket enforcement.
+- This is a request-count safeguard, not a dollar/token spend cap. Dollar-level enforcement remains outstanding.
