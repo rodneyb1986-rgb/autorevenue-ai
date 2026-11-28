@@ -6,6 +6,7 @@ const { validateAgentPlan } = require('../lib/agent-plan');
 
 function validPlan(overrides = {}) {
   return {
+    operation: 'review_workspace_evidence',
     objective: 'Validate a customer problem using existing information.',
     assumptions: ['The problem is important to the target customer.'],
     steps: [1,2,3].map(n => ({
@@ -55,4 +56,8 @@ test('caps text and list lengths', () => {
   const result = validateAgentPlan(validPlan({ objective: 'x'.repeat(1500), assumptions: Array.from({length:12},()=> 'a') }));
   assert.equal(result.objective.length, 1000);
   assert.equal(result.assumptions.length, 8);
+});
+
+test('rejects unapproved internal operation types', () => {
+  assert.throws(() => validateAgentPlan(validPlan({ operation: 'send_email' })), /Unsupported internal operation/);
 });
