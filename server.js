@@ -139,6 +139,10 @@ function cleanState(value) {
   return out;
 }
 async function initStorage() {
+  // Render's filesystem is ephemeral. Never start a hosted instance with local JSON storage.
+  if (process.env.RENDER && !process.env.DATABASE_URL) {
+    throw new Error('DATABASE_URL is required on Render; refusing to start with ephemeral local JSON storage.');
+  }
   if (process.env.DATABASE_URL) {
     const { Pool } = require('pg');
     pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false }, max: 5, connectionTimeoutMillis: 10000 });
